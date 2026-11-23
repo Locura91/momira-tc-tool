@@ -2159,10 +2159,51 @@ def _rebuild_transfer_prices(route: Dict[str, Any],
         ccy = (existing or {}).get("currency", currency) if isinstance(existing, dict) else currency
         return {"amount": amount, "currency": ccy}
 
+    # Which (occupancy, bracket) pairs get an entry.
+    #
+    # CONFIRMED REAL REQUEST (operator, 2026-11-23, with a side-by-side screenshot of TC's
+    # "Transfer Prices By Occupancy" table): "it would be better and would be more accurate
+    # if we would exactly put just the prices we add for each of the occupancy, for each of
+    # the max occupancy that we have... that we are adding there a single line."
+    #
+    # TRANSFER-454499 had Max Occupancy 6 but only TWO rows in that table (occupancy 1 and
+    # 2); occupancies 3-6 silently fell through to the adult-only top-level basePrice, so
+    # the child rate did not apply to them at all. The review screen already listed all six,
+    # which made the mismatch invisible until the operator opened TC side by side.
+    #
+    # force_explicit_all now does what its docstring always claimed: it emits one entry per
+    # occupancy from minOccupancy to maxOccupancy, taking each occupancy's own override when
+    # it has one and the default rate when it does not. Without it the loop could only ever
+    # walk the brackets that already existed, so an occupancy with no row in TC could never
+    # gain one - no amount of skip-logic tweaking could have produced the missing rows.
+    pairs = []
+    if force_explicit_all:
+        try:
+            _min_occ = int(_num(payload.get("minOccupancy"), 1)) or 1
+        except (TypeError, ValueError):
+            _min_occ = 1
+        try:
+            _max_occ = int(_num(payload.get("maxOccupancy"), 0)) or 0
+        except (TypeError, ValueError):
+            _max_occ = 0
+        if _max_occ <= 0:
+            _max_occ = max((int(b.get("max_pax") or 0) for b in brackets), default=_min_occ)
+        _max_occ = max(_min_occ, min(_max_occ, 9))  # TC tops out at 9 passengers per booking
+        _explicit = {int(b["min_pax"]): b for b in brackets
+                     if b["code"] != DEFAULT_BRACKET_CODE
+                     and b.get("min_pax") == b.get("max_pax") and b.get("min_pax")}
+        for _occ in range(_min_occ, _max_occ + 1):
+            _b = _explicit.get(_occ) or default
+            if _b is not None:
+                pairs.append((_occ, _b))
+    else:
+        for bracket in brackets:
+            if bracket["code"] == DEFAULT_BRACKET_CODE:
+                continue
+            pairs.append((int(bracket["min_pax"]), bracket))
+
     entries = []
-    for bracket in brackets:
-        if bracket["code"] == DEFAULT_BRACKET_CODE:
-            continue
+    for occupancy, bracket in pairs:
         price = resolved[bracket["code"]]
         child_price = resolved_child[bracket["code"]]
         infant_price = resolved_infant[bracket["code"]]
@@ -2176,7 +2217,12 @@ def _rebuild_transfer_prices(route: Dict[str, Any],
         matches_default_adult = abs(price - base) < 0.005
         if matches_default_adult and not has_child_or_infant and not force_explicit_all:
             continue
-        entry = dict(bracket.get("raw") or {"occupancy": bracket["min_pax"]})
+        # An occupancy that is inheriting the default rate has no raw entry of its own, so
+        # it starts from a bare dict. Setting "occupancy" unconditionally is what makes a
+        # brand-new row for occupancies 3..max land on the right line rather than
+        # duplicating the default bracket's own min_pax.
+        entry = dict(bracket.get("raw") or {})
+        entry["occupancy"] = occupancy
         entry["basePrice"] = _money(price, entry.get("basePrice"))
         # Only write a childPrice / infantPrice field when we have one to carry - leaving the
         # field absent lets TC fall back to no child rate, matching the shape of a fresh entry.
@@ -2288,11 +2334,26 @@ def rebuild_prices(route: Dict[str, Any], changes: List[Dict[str, Any]]) -> Dict
                             if c.get("child_new") is not None}
         new_infant_prices = {c["code"]: c["infant_new"] for c in changes
                              if c.get("infant_new") is not None}
-        has_any_child = any(c.get("child_new", 0) > 0.005 for c in changes)
+        # Always expand to one row per occupancy, never only the occupancies that already
+        # had a row. CONFIRMED (operator, 2026-11-23): "each occupancy would get their own
+        # occupancy line in this case, so it would be maximum 9 packs available because
+        # this is the maximum we do." This also makes TC's "Transfer Prices By Occupancy"
+        # table match the review screen's table one for one - previously the screen listed
+        # six occupancies while TC held only two rows, and the child rate therefore never
+        # reached the other four.
+        #
+        # WHY unconditionally, rather than only when a child price happens to be present
+        # (operator, 2026-11-23): "we could have child prices which are by higher occupancy
+        # more accurate, and we had better and more accurate prices for the children. And
+        # also we could easily handle it with our API tool... doable to transfer it in
+        # bulk." A row that exists is a row a later bulk run can address and refine; an
+        # occupancy with no row of its own cannot carry a child price at all, because the
+        # top-level basePrice this app falls back to is adult-only. Creating the full set
+        # up front is what makes per-occupancy child pricing reachable in bulk later.
         return _rebuild_transfer_prices(route, new_unit_prices,
                                         new_child_prices=new_child_prices or None,
                                         new_infant_prices=new_infant_prices or None,
-                                        force_explicit_all=has_any_child)
+                                        force_explicit_all=True)
     # CONFIRMED REAL BUG (audit, 2026-08-24): see build_proposals' "blocked_unreadable" comment.
     # Refusing here as well as at the proposal stage is deliberate belt-and-braces: this function
     # is what actually computes the shared base price, so it is the place where repricing every
