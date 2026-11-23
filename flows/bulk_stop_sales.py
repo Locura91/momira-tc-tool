@@ -234,6 +234,28 @@ def _load_transports(client, supplier_id: str) -> Tuple[List[Dict], Optional[str
 
 # ── apply helpers ─────────────────────────────────────────────────────────────
 
+def _normalise_transfer_stop_sale_in(entry: Dict) -> Optional[Dict]:
+    """TC's ContractTransferStopSaleVO uses startDate/endDate, UNLIKE every other
+    contract's stopSales which uses LocalDateRangeVO {start, end}. Normalise an
+    incoming (live-from-GET) entry to {start, end} so merge_stop_sales can compare
+    it against new ranges on the same keys. CONFIRMED REAL BUG (operator,
+    2026-11-23): writing with {start, end} on a Transfer silently did nothing -
+    TC ignored unknown fields and left stopSales empty."""
+    if not isinstance(entry, dict):
+        return None
+    s = entry.get("start") or entry.get("startDate")
+    e = entry.get("end") or entry.get("endDate")
+    if not s or not e:
+        return None
+    return {"start": str(s), "end": str(e)}
+
+
+def _to_transfer_wire_shape(entry: Dict) -> Dict:
+    """Convert {start, end} back to {startDate, endDate} so TC's PUT /transfer
+    accepts it. See _normalise_transfer_stop_sale_in for the asymmetry."""
+    return {"startDate": entry["start"], "endDate": entry["end"]}
+
+
 def _apply_transfer(client, supplier_id: str, product: Dict, new_ranges: List[Dict]) -> Dict:
     """GET the transfer, merge stop sales, PUT it back.
 
@@ -241,7 +263,13 @@ def _apply_transfer(client, supplier_id: str, product: Dict, new_ranges: List[Di
     the result banner can show '2 Transfers updated with 20 new stop-sale ranges'
     and name each by TRANSFER-nnnnnn - the operator asked for this cross-check
     after a confusing session where they weren't sure whether TC had actually
-    received the ranges they'd just applied (2026-11-23)."""
+    received the ranges they'd just applied (2026-11-23).
+
+    CONFIRMED REAL BUG (same session, verified against the TC API spec at
+    docs/tc_api_reference.md line 10912): TC's ContractTransferStopSaleVO uses
+    startDate/endDate, not start/end. We were writing {start, end} and TC was
+    silently dropping those unknown fields - the UI reported success, TC had
+    nothing. This function now writes the correct wire shape."""
     tid = product["id"]
     name = product["name"]
     try:
@@ -253,13 +281,18 @@ def _apply_transfer(client, supplier_id: str, product: Dict, new_ranges: List[Di
         return {"status": "failed", "name": name, "id": tid,
                 "detail": str(rec.get("message") or rec.get("error"))}
     import stop_sales_parser as ssp
-    live = [s for s in (rec.get("stopSales") or []) if isinstance(s, dict)]
+    # Normalise whatever TC's GET returned (could be startDate/endDate or
+    # legacy start/end on an older record) to {start, end} so the merge works.
+    live = [n for n in (_normalise_transfer_stop_sale_in(s) for s in (rec.get("stopSales") or []))
+            if n is not None]
     result = ssp.merge_stop_sales(live, new_ranges)
     if not result["added"]:
         return {"status": "unchanged", "name": name, "id": tid,
                 "detail": f"every date was already blocked on {tid}"}
     payload = dict(rec)
-    payload["stopSales"] = result["merged"]
+    # Write back in TC's required Transfer-specific wire shape - every merged
+    # entry, both the existing ones we read in and the new ones we added.
+    payload["stopSales"] = [_to_transfer_wire_shape(r) for r in result["merged"]]
     try:
         res = client.update_transfer(supplier_id, payload)
     except Exception as e:
@@ -647,11 +680,16 @@ def render_bulk_stop_sales_flow(client):
                             continue
                         if isinstance(rec, dict) and "error" not in rec:
                             for s in (rec.get("stopSales") or []):
-                                if isinstance(s, dict) and (s.get("end") or "") < today_str:
+                                # TC's ContractTransferStopSaleVO uses startDate/endDate,
+                                # unlike every other stopSales shape. Fall through to
+                                # start/end in case TC ever normalises or an older
+                                # record still carries legacy keys.
+                                n = _normalise_transfer_stop_sale_in(s)
+                                if n and (n["end"] or "") < today_str:
                                     expired_items.append({
                                         "kind": kind, "pid": pid, "pname": pname,
                                         "label": pname,
-                                        "start": s.get("start"), "end": s.get("end"),
+                                        "start": n["start"], "end": n["end"],
                                     })
                     elif kind in ("Ticket", "ClosedTour"):
                         for mod_code in (product.get("modalities") or []):
@@ -733,15 +771,21 @@ def render_bulk_stop_sales_flow(client):
                             if kind == "Transfer":
                                 rec = client.get_transfer(supplier_id, pid)
                                 if isinstance(rec, dict) and "error" not in rec:
-                                    live = [s for s in (rec.get("stopSales") or [])
-                                            if isinstance(s, dict)]
-                                    kept = [s for s in live
+                                    # Normalise to {start,end} first - TC's wire
+                                    # shape for Transfer is {startDate,endDate}.
+                                    live_norm = [n for n in (
+                                        _normalise_transfer_stop_sale_in(s)
+                                        for s in (rec.get("stopSales") or []))
+                                                 if n is not None]
+                                    kept = [s for s in live_norm
                                             if not any(
-                                                s.get("start") == r["start"] and
-                                                s.get("end") == r["end"]
+                                                s["start"] == r["start"] and
+                                                s["end"] == r["end"]
                                                 for r in ranges_to_remove)]
                                     payload = dict(rec)
-                                    payload["stopSales"] = kept
+                                    # Write back in Transfer's required wire shape.
+                                    payload["stopSales"] = [
+                                        _to_transfer_wire_shape(k) for k in kept]
                                     res = client.update_transfer(supplier_id, payload)
                                     if isinstance(res, dict) and "error" in res:
                                         delete_errors.append(
