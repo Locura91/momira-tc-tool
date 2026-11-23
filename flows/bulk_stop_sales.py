@@ -526,8 +526,20 @@ def render_bulk_stop_sales_flow(client):
             r_start = st.date_input(f"From (inclusive)", value=date.today(),
                                     format="DD/MM/YYYY", key=f"bss_start_{idx}")
         with rcol_b:
-            r_end = st.date_input(f"To (inclusive)", value=date.today(),
-                                  format="DD/MM/YYYY", key=f"bss_end_{idx}")
+            # CONFIRMED REAL REQUEST (operator, 2026-11-23): once the operator picks
+            # a start date, the end date must default to the SAME date (so a
+            # single-day stop sale needs just one click), not to today. The human
+            # can still extend the end date further into the future if they want a
+            # range. If the user has already picked an end date in a previous
+            # interaction that now lies BEFORE the new start date, bump it forward
+            # to the start date - a stop sale ending before it begins is never
+            # what was meant.
+            _end_key = f"bss_end_{idx}"
+            _existing_end = st.session_state.get(_end_key)
+            if _existing_end is None or _existing_end < r_start:
+                st.session_state[_end_key] = r_start
+            r_end = st.date_input(f"To (inclusive)", value=r_start,
+                                  format="DD/MM/YYYY", key=_end_key)
         with rcol_c:
             r_years = st.number_input(
                 "Repeat yearly × ", min_value=1, max_value=10, value=1, step=1,
