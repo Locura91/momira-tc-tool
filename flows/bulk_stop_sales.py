@@ -24,9 +24,10 @@ name/label field. The "name" field shown in the UI is a local convenience label 
 human's own reference; it is not sent to TC and not stored.
 """
 
-MODULE_BUILD = "2026-10-24-rollover-ext"
+MODULE_BUILD = "2026-11-23-multi-range-destination-yearly"
 
 import json
+import re as _re_bss
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -37,6 +38,75 @@ from ai_extractor import friendly_error_message
 from ui_components import is_active_supplier
 from flows.flow_ui_helpers import load_momira_suppliers
 from list_response_utils import normalize_list_response
+
+
+# ── destination filter helpers ─────────────────────────────────────────────────
+# Reuses the pattern from flows/price_refresh.py so a user searching for "Koh Lipe"
+# matches "Koh Lipe Harbour" and "Koh Lipe Pier" alike - substring, not exact.
+_TRANSPORT_PREFIX = _re_bss.compile(
+    r"^(?:one[- ]?way|round[- ]?trip|private|shared|)[\s]*"
+    r"(?:transfer|transport|)[\s]*(?:from\s+)?",
+    _re_bss.IGNORECASE,
+)
+
+
+def _extract_cities_from_name(name: str) -> List[str]:
+    """Pull city names out of a product name like 'One-way transfer from Hat Yai Airport
+    (HDY) - Koh Lipe Harbour'. Strips the 'transfer from' prefix and any trailing
+    parenthetical codes like '(HDY)' so the dropdown shows clean names."""
+    if not name:
+        return []
+    cities = []
+    for sep in ["→", " - ", " – ", " — "]:
+        if sep in name:
+            for part in name.split(sep):
+                city = _re_bss.sub(r"\s*\([^)]*\)", "", part).strip()
+                city = _TRANSPORT_PREFIX.sub("", city).strip()
+                if city:
+                    cities.append(city)
+            break
+    return cities
+
+
+def _product_matches_destinations(product: Dict, selected: List[str]) -> bool:
+    """A product matches when any of the selected cities appears in its name as a
+    substring (case-insensitive). 'Koh Li' matches 'Koh Lipe Harbour' and 'Koh Lipe
+    Pier' both - the operator's own real request, since a destination has many
+    variants (airport, pier, harbour, city) that should all count as the same place."""
+    if not selected:
+        return True
+    name_lower = (product.get("name") or "").lower()
+    return any(s.lower() in name_lower for s in selected)
+
+
+# ── yearly recurrence helpers ──────────────────────────────────────────────────
+def _expand_yearly(start: date, end: date, years: int) -> List[Dict[str, str]]:
+    """Expand a single stop-sale range into N consecutive years of the same slot.
+
+    Example: start=2027-05-01, end=2027-10-31, years=10 produces ten {start, end}
+    dicts for 2027-2036 inclusive. CONFIRMED USE CASE (operator, 2026-11-23): a
+    seasonal route that only runs Nov-Apr needs a stop sale for May-Oct repeated for
+    the next 10 years so a booking in year +7 is correctly refused.
+
+    Feb 29 on a non-leap year is clamped to Feb 28 so the range stays valid rather
+    than silently skipping that year.
+    """
+    if years < 1:
+        years = 1
+    out = []
+    for i in range(years):
+
+        def _shift(d: date, by: int) -> date:
+            try:
+                return d.replace(year=d.year + by)
+            except ValueError:
+                # Feb 29 on a non-leap year - step back to Feb 28 rather than drop
+                return d.replace(year=d.year + by, day=28)
+
+        s = _shift(start, i)
+        e = _shift(end, i)
+        out.append({"start": s.isoformat(), "end": e.isoformat()})
+    return out
 
 # Travel Compositor wraps list responses under a singular or plural key depending on
 # account/version, so every loader below sniffs the shape via normalize_list_response
@@ -360,8 +430,35 @@ def render_bulk_stop_sales_flow(client):
         st.warning("No products found for this supplier and product type combination.")
         st.stop()
 
+    # ── destination filter ────────────────────────────────────────────────────
+    # CONFIRMED REAL REQUEST (operator, 2026-11-23): after supplier + product type,
+    # narrow further by destination city. The Koh Lipe case: a supplier has 24
+    # transfers, most of them touch Koh Lipe in some form (Harbour, Pier, Airport),
+    # and the operator wants to see ONLY those at once to apply a May-Oct stop sale.
+    _destination_filter: List[str] = []
+    _all_cities = set()
+    for p in all_products:
+        for c in _extract_cities_from_name(p.get("name") or ""):
+            _all_cities.add(c)
+    _sorted_cities = sorted(_all_cities)
+    if _sorted_cities:
+        _destination_filter = st.multiselect(
+            f"Filter by destination ({len(_sorted_cities)} cities found — leave empty to see all products)",
+            _sorted_cities, key="bss_city_filter",
+            placeholder="e.g. Koh Lipe — matches every variant (Pier, Harbour, Airport)")
+        if _destination_filter:
+            st.caption(f"ℹ️ Substring match: selecting 'Koh Lipe' also includes 'Koh Lipe Pier', "
+                       f"'Koh Lipe Harbour', etc.")
+
+    filtered_products = [p for p in all_products
+                         if _product_matches_destinations(p, _destination_filter)]
+    if not filtered_products:
+        st.warning("No products match that destination filter. Clear it to see all.")
+        st.stop()
+
     # ── product selection ─────────────────────────────────────────────────────
-    st.markdown(f"**Select products** ({len(all_products)} found)")
+    _filter_note = f" (filtered from {len(all_products)})" if _destination_filter else ""
+    st.markdown(f"**Select products** ({len(filtered_products)} found{_filter_note})")
 
     # Each product's checkbox is keyed by kind+id, so the same code appearing as
     # both (say) a Ticket and a ClosedTour gets its own box. Select all / Clear all
@@ -373,19 +470,22 @@ def render_bulk_stop_sales_flow(client):
 
     sel_cols = st.columns([1, 1])
     with sel_cols[0]:
-        if st.button("✅ Select all", key="bss_sel_all"):
-            for p in all_products:
+        if st.button("✅ Select all (visible)", key="bss_sel_all"):
+            # CONFIRMED (operator, 2026-11-23): Select all now applies to the FILTERED
+            # list only - selecting all when a destination filter is active was
+            # surprising if it also ticked products that weren't on screen.
+            for p in filtered_products:
                 st.session_state[_wkey(p)] = True
             st.rerun()
     with sel_cols[1]:
         if st.button("☐ Clear all", key="bss_sel_none"):
-            for p in all_products:
+            for p in all_products:  # clear every box, filtered or not
                 st.session_state[_wkey(p)] = False
             st.rerun()
 
-    # Group by type for display
+    # Group by type for display - the filtered list only.
     by_type: Dict[str, List] = {}
-    for p in all_products:
+    for p in filtered_products:
         by_type.setdefault(p["kind"], []).append(p)
 
     selected_products = []
@@ -404,28 +504,85 @@ def render_bulk_stop_sales_flow(client):
 
     st.success(f"**{len(selected_products)} product(s) selected**")
 
-    # ── date range ────────────────────────────────────────────────────────────
-    st.markdown("**Stop sale date range**")
-    dcol1, dcol2 = st.columns(2)
-    with dcol1:
-        start_date = st.date_input("From (inclusive)", value=date.today(),
-                                   format="DD.MM.YYYY", key="bss_start")
-    with dcol2:
-        end_date = st.date_input("To (inclusive)", value=date.today(),
-                                 format="DD.MM.YYYY", key="bss_end")
+    # ── date ranges (multiple) ────────────────────────────────────────────────
+    # CONFIRMED REAL REQUEST (operator, 2026-11-23): one bulk apply must support
+    # multiple separate date ranges, so a single trip to this tool can block
+    # e.g. Chinese Spring Festival (Feb 10-20) AND Golden Week (Oct 1-7) in one go.
+    # Each range also gets an optional "repeat yearly for N years" expansion - the
+    # Phuket-Koh Lipe case (closed May-Oct for the next 10 years), Nyepi in Indonesia
+    # (one day every year), Christmas/New Year's Eve blackouts in Vietnam, etc.
+    st.markdown("**Stop sale date ranges**")
 
-    if end_date < start_date:
-        st.error("End date must be on or after start date.")
+    if _get("bss_ranges_count") is None:
+        _set("bss_ranges_count", 1)
+    ranges_count = _get("bss_ranges_count")
+
+    new_ranges: List[Dict[str, str]] = []
+    _range_summaries: List[str] = []
+    _any_invalid = False
+    for idx in range(ranges_count):
+        rcol_a, rcol_b, rcol_c, rcol_d = st.columns([3, 3, 2, 1])
+        with rcol_a:
+            r_start = st.date_input(f"From (inclusive)", value=date.today(),
+                                    format="DD.MM.YYYY", key=f"bss_start_{idx}")
+        with rcol_b:
+            r_end = st.date_input(f"To (inclusive)", value=date.today(),
+                                  format="DD.MM.YYYY", key=f"bss_end_{idx}")
+        with rcol_c:
+            r_years = st.number_input(
+                "Repeat yearly × ", min_value=1, max_value=10, value=1, step=1,
+                key=f"bss_years_{idx}",
+                help="1 = just this year. 10 = this year plus the next 9 "
+                     "(same month and day each year). Useful for permanently seasonal "
+                     "routes (closed May-Oct for the next 10 years) or recurring "
+                     "public holidays (Nyepi, Christmas blackouts).")
+        with rcol_d:
+            st.markdown("<br>", unsafe_allow_html=True)  # vertical align with inputs
+            if idx > 0 and st.button("🗑", key=f"bss_del_range_{idx}",
+                                     help="Remove this range"):
+                _set("bss_ranges_count", max(1, ranges_count - 1))
+                # Drop the removed range's widget state so slots renumber cleanly.
+                for k in (f"bss_start_{idx}", f"bss_end_{idx}", f"bss_years_{idx}"):
+                    st.session_state.pop(k, None)
+                st.rerun()
+
+        if r_end < r_start:
+            st.error(f"Range {idx + 1}: End date must be on or after start date.")
+            _any_invalid = True
+            continue
+
+        expanded = _expand_yearly(r_start, r_end, int(r_years))
+        new_ranges.extend(expanded)
+
+        if r_years == 1:
+            if r_start == r_end:
+                _range_summaries.append(f"**{r_start.strftime('%d.%m.%Y')}** (single day)")
+            else:
+                days = (r_end - r_start).days + 1
+                _range_summaries.append(
+                    f"**{r_start.strftime('%d.%m.%Y')} – {r_end.strftime('%d.%m.%Y')}** "
+                    f"({days} days)")
+        else:
+            last_year = r_start.year + int(r_years) - 1
+            _range_summaries.append(
+                f"**{r_start.strftime('%d.%m.')}–{r_end.strftime('%d.%m.')}** every year "
+                f"from **{r_start.year}** through **{last_year}** "
+                f"({int(r_years)} year(s), {len(expanded)} ranges)")
+
+    if _any_invalid:
         st.stop()
 
-    new_ranges = [{"start": start_date.isoformat(), "end": end_date.isoformat()}]
+    acol1, acol2 = st.columns([1, 3])
+    with acol1:
+        if st.button("➕ Add another range", key="bss_add_range"):
+            _set("bss_ranges_count", ranges_count + 1)
+            st.rerun()
 
-    if start_date == end_date:
-        st.caption(f"Single day: **{start_date.strftime('%d.%m.%Y')}**")
-    else:
-        days = (end_date - start_date).days + 1
-        st.caption(f"**{start_date.strftime('%d.%m.%Y')} – {end_date.strftime('%d.%m.%Y')}** "
-                   f"({days} days)")
+    for s in _range_summaries:
+        st.caption(f"• {s}")
+    if len(new_ranges) > 1:
+        st.caption(f"ℹ️ Total **{len(new_ranges)}** stop-sale range(s) will be applied "
+                   f"per product.")
 
     st.caption("ℹ️ Travel Compositor does not store a name/label on stop sales — "
                "the dates themselves are the record.")
@@ -640,8 +797,9 @@ def render_bulk_stop_sales_flow(client):
 
     # ── apply ─────────────────────────────────────────────────────────────────
     st.divider()
+    _range_word = "range" if len(new_ranges) == 1 else "ranges"
     st.warning(
-        f"This will block **{start_date.strftime('%d.%m.%Y')} – {end_date.strftime('%d.%m.%Y')}** "
+        f"This will block **{len(new_ranges)} date {_range_word}** "
         f"on **{len(selected_products)} product(s)**. "
         f"Existing blocks are kept; these dates are added to them."
     )
