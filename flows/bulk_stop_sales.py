@@ -524,10 +524,10 @@ def render_bulk_stop_sales_flow(client):
         rcol_a, rcol_b, rcol_c, rcol_d = st.columns([3, 3, 2, 1])
         with rcol_a:
             r_start = st.date_input(f"From (inclusive)", value=date.today(),
-                                    format="DD.MM.YYYY", key=f"bss_start_{idx}")
+                                    format="DD/MM/YYYY", key=f"bss_start_{idx}")
         with rcol_b:
             r_end = st.date_input(f"To (inclusive)", value=date.today(),
-                                  format="DD.MM.YYYY", key=f"bss_end_{idx}")
+                                  format="DD/MM/YYYY", key=f"bss_end_{idx}")
         with rcol_c:
             r_years = st.number_input(
                 "Repeat yearly × ", min_value=1, max_value=10, value=1, step=1,

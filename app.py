@@ -862,6 +862,22 @@ if _APP_PASSWORD and not st.session_state.get("_authenticated"):
 # default 16px browser base up to ~17px.
 st.markdown("<style>html { font-size: 106%; }</style>", unsafe_allow_html=True)
 
+# CONFIRMED REAL REQUEST (operator, 2026-11-23): every date input across the app
+# must render as DD/MM/YYYY, not YYYY/MM/DD (the Streamlit default). Rather than
+# patching every date_input call site, wrap st.date_input once so any call that
+# doesn't pass its own `format=` picks up DD/MM/YYYY automatically. Calls that
+# explicitly pass a different format (e.g. YYYY-MM-DD for DB fields) are left
+# alone so no caller gets a surprise behaviour change.
+if not getattr(st.date_input, "_dmy_wrapped", False):
+    _orig_date_input = st.date_input
+
+    def _dmy_date_input(*args, **kwargs):
+        kwargs.setdefault("format", "DD/MM/YYYY")
+        return _orig_date_input(*args, **kwargs)
+
+    _dmy_date_input._dmy_wrapped = True
+    st.date_input = _dmy_date_input
+
 # CONFIRMED REAL REQUEST (operator, 2026-11-23): the Streamlit date-picker calendar
 # shows 4, 5, or 6 week-rows depending on the month. Clicking "next" rapidly caused
 # the arrow to jump up and down as the calendar body resized, leading to misclicks on

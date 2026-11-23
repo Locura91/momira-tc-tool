@@ -1129,7 +1129,7 @@ def render_ticket_price_refresh_flow(client):
             "Start date for the NEW Modality",
             value=_default_start,
             min_value=_default_start,
-            format="DD.MM.YYYY",
+            format="DD/MM/YYYY",
             key="tpr_new_start_date",
             help="Defaults to the day after the existing modality's end date.",
         )
@@ -1138,7 +1138,7 @@ def render_ticket_price_refresh_flow(client):
             "End date for the NEW Modality",
             value=_default_end,
             min_value=_default_start,
-            format="DD.MM.YYYY",
+            format="DD/MM/YYYY",
             key="tpr_new_end_date",
             help="Sets the endDate on each newly created Modality.",
         )
