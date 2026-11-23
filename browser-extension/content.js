@@ -19,6 +19,8 @@
 
   var SS_KEY = "tcRolloverState";
   var MAX_AGE_MS = 600000; // 10 min: abandon a stale run rather than resume it
+  var MAX_SCAN_DATES = 14; // hard ceiling on the cheapest-of-N scan; the tool asks for 7
+  var SCAN_MAX_AGE_MS = 2400000; // 40 min: a 7-date scan is ~8 searches, far longer than one
 
   // ── state persistence (sessionStorage survives TC's internal navigations) ────────────────
   function loadState() {
@@ -37,18 +39,43 @@
             (location.hash || "").match(/[#&]tcr=([^&]+)/);
     if (m) {
       var seedDate = decodeURIComponent(m[1]);
-      state = { active: true, date: seedDate, originalDate: seedDate, flexDays: 0, phase: "click_book", ts: Date.now() };
+      // ?tcrscan=N asks for the CHEAPEST-OF-N scan (operator, 2026-11-23): run the whole
+      // search N times on N consecutive days, remember each price, then re-run the cheapest
+      // one and stop there for the human to accept. N absent or 1 = the original single-date
+      // behaviour, unchanged.
+      var sm = (location.search || "").match(/[?&]tcrscan=(\d+)/) ||
+               (location.hash || "").match(/[#&]tcrscan=(\d+)/);
+      var scanCount = sm ? Math.max(1, Math.min(parseInt(sm[1]), MAX_SCAN_DATES)) : 1;
+      var dates = [];
+      for (var di = 0; di < scanCount; di++) dates.push(addDays(seedDate, di));
+      state = {
+        active: true,
+        date: dates[0], originalDate: dates[0], flexDays: 0,
+        phase: "click_book", ts: Date.now(),
+        scan: scanCount > 1,
+        dates: dates,
+        idx: 0,
+        results: [],
+        finalRun: false,
+        // Where to return to before each subsequent date. Captured here because this is the
+        // one moment we are provably standing on the package page.
+        ideaUrl: location.origin + location.pathname
+      };
       saveState(state);
       // strip so a refresh doesn't re-seed and TC's own navigations don't carry it forward
       try {
-        var cleanSearch = (location.search || "").replace(/([?&])tcr=[^&]*&?/, "$1").replace(/[?&]$/, "");
+        var cleanSearch = (location.search || "")
+          .replace(/([?&])tcr=[^&]*&?/, "$1")
+          .replace(/([?&])tcrscan=[^&]*&?/, "$1")
+          .replace(/[?&]$/, "");
         history.replaceState(null, "", location.pathname + cleanSearch);
       } catch (e) {}
     }
   } catch (e) {}
 
   if (!state || !state.active) return;
-  if (!state.ts || Date.now() - state.ts > MAX_AGE_MS) { clearState(); return; }
+  var ageLimit = state.scan ? SCAN_MAX_AGE_MS : MAX_AGE_MS;
+  if (!state.ts || Date.now() - state.ts > ageLimit) { clearState(); return; }
 
   // ── did we actually land on a package page? ──────────────────────────────────────────────
   // CONFIRMED REAL SYMPTOM (operator, 2026-11-23): "it falls back to the main page of Travel
@@ -384,6 +411,104 @@
     return null;
   }
 
+  // ── price reading on the booking summary ─────────────────────────────────────────────────
+  // CONFIRMED REAL LAYOUT (operator screenshot, 2026-11-23). The summary's left rail reads:
+  //     Your trip summary
+  //     1.924 €
+  //     price per person
+  //     (3.848 € Total price)
+  //     Includes taxes and fees
+  //     Idea id: 68693460
+  // So: European number format (dot = thousands, comma = decimals), the € sign AFTER the
+  // number, and TWO money figures - per person and total - which must not be confused. The
+  // rollover screen in the tool shows "Current price / person", so per-person is what the
+  // cheapest-of-N comparison uses; the total is captured too, purely as a cross-check
+  // (total should be per-person x pax).
+  function parseMoney(text) {
+    if (!text) return null;
+    // Grab the first number that looks like money, with optional European grouping.
+    var m = String(text).match(/(\d[\d.\s ]*(?:,\d{1,2})?)\s*(?:€|EUR)|(?:€|EUR)\s*(\d[\d.\s ]*(?:,\d{1,2})?)/i);
+    if (!m) return null;
+    var raw = (m[1] || m[2] || "").replace(/[\s ]/g, "");
+    if (!raw) return null;
+    // European: "1.924" -> 1924, "1.924,56" -> 1924.56, "924,50" -> 924.50
+    raw = raw.replace(/\./g, "").replace(",", ".");
+    var v = parseFloat(raw);
+    return isNaN(v) ? null : v;
+  }
+
+  // Smallest element that actually contains the text, so we read "1.924 €" and not the whole
+  // left rail (which would also swallow the total and the Idea id).
+  function smallestElementContaining(re, root) {
+    var all = (root || document).querySelectorAll("div,span,p,strong,b,h1,h2,h3,h4,li,td");
+    var best = null;
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i];
+      var t = (el.textContent || "").trim();
+      if (!t || t.length > 400) continue;
+      if (!re.test(t)) continue;
+      if (!best || t.length < (best.textContent || "").trim().length) best = el;
+    }
+    return best;
+  }
+
+  function readSummaryPrices() {
+    var out = { perPerson: null, total: null, currency: "EUR", source: "" };
+
+    // Total: the figure explicitly labelled "Total price" / "Gesamtpreis".
+    var totalEl = smallestElementContaining(/total\s*price|gesamtpreis|precio\s*total/i);
+    if (totalEl) {
+      out.total = parseMoney(totalEl.textContent);
+      if (out.total !== null) out.source = "labelled total";
+    }
+
+    // Per person: the figure labelled "price per person". The label and the number are
+    // siblings in the observed layout, so when the label's own element has no money in it,
+    // look at its parent.
+    var ppEl = smallestElementContaining(/price\s*per\s*person|pro\s*person|preis\s*pro\s*person/i);
+    if (ppEl) {
+      out.perPerson = parseMoney(ppEl.textContent);
+      if (out.perPerson === null && ppEl.parentElement) {
+        // Parent holds "1.924 € / price per person / (3.848 € Total price)" - take the FIRST
+        // money token, which is the per-person one that sits above the label.
+        out.perPerson = parseMoney(ppEl.parentElement.textContent);
+      }
+      if (out.perPerson !== null && !out.source) out.source = "labelled per person";
+    }
+
+    // A per-person figure that accidentally latched onto the total is worse than none.
+    if (out.perPerson !== null && out.total !== null && out.perPerson === out.total) {
+      var container = ppEl && ppEl.parentElement ? ppEl.parentElement : null;
+      if (container) {
+        var moneys = (container.textContent.match(/\d[\d.\s ]*(?:,\d{1,2})?\s*€/g) || [])
+          .map(parseMoney).filter(function (v) { return v !== null; });
+        if (moneys.length >= 2) out.perPerson = Math.min.apply(null, moneys);
+      }
+    }
+
+    if (out.perPerson === null && out.total === null) out.source = "not found";
+    return out;
+  }
+
+  // Debug dump: every money-looking element with a selector hint, so an unexpected layout can
+  // be mapped from a real run instead of guessed at.
+  function recordPrices() {
+    var all = document.querySelectorAll("div,span,p,strong,b,h1,h2,h3,h4,li,td");
+    var out = [];
+    for (var i = 0; i < all.length && out.length < 40; i++) {
+      var el = all[i];
+      var t = (el.textContent || "").trim();
+      if (!t || t.length > 120) continue;
+      if (!/(?:€|EUR)/i.test(t)) continue;
+      if (el.children && el.children.length > 2) continue;
+      var cls = (el.className && typeof el.className === "string")
+        ? "." + el.className.trim().split(/\s+/).join(".") : "";
+      out.push(t.substring(0, 60) + "  →  " + el.tagName.toLowerCase() + (el.id ? "#" + el.id : "") + cls.substring(0, 70));
+    }
+    try { console.log("[TC Rollover] money-looking elements:\n" + out.join("\n")); } catch (e) {}
+    return out.join("\n");
+  }
+
   function listInputs() {
     var inputs = document.querySelectorAll("input:not([type='hidden'])");
     var info = [];
@@ -431,6 +556,7 @@
       case "click_book":  return phaseClickBook();
       case "set_date":    return phaseSetDate();
       case "click_search":return phaseClickSearch();
+      case "read_price":  return phaseReadPrice();
       case "summary":     return phaseSummary();
       default: return;
     }
@@ -538,8 +664,12 @@
 
   function phaseClickSearch() {
     waitFor(findSearchButton, function (btn) {
-      say("Starting search for <b>" + DATE + "</b>…");
-      setPhase("summary");           // persist BEFORE clicking: Search navigates; re-injection resumes at summary
+      say(scanProgressPrefix() + "Starting search for <b>" + DATE + "</b>…");
+      // In a cheapest-of-N scan every search but the final one lands on read_price, which
+      // records the price and moves to the next date. The final run (the winner being
+      // re-quoted) lands on the normal summary phase so the human can accept it.
+      var next = (state.scan && !state.finalRun) ? "read_price" : "summary";
+      setPhase(next);                // persist BEFORE clicking: Search navigates; re-injection resumes
       safeClick(btn);
       setTimeout(run, 1500);         // in case Search renders the summary in-page instead of navigating
     }, function () {
@@ -547,20 +677,127 @@
     }, 40, 300);
   }
 
+  // ── cheapest-of-N scan ───────────────────────────────────────────────────────────────────
+  function scanProgressPrefix() {
+    if (!state.scan) return "";
+    if (state.finalRun) return "<b>Final:</b> re-quoting the cheapest date.<br>";
+    return "<b>Date " + (state.idx + 1) + " of " + state.dates.length + "</b><br>";
+  }
+
+  function resultsTable() {
+    if (!state.results || !state.results.length) return "";
+    var cheapest = cheapestResult();
+    var rows = state.results.map(function (r) {
+      var isWin = cheapest && r.date === cheapest.date;
+      var price = (r.perPerson !== null && r.perPerson !== undefined)
+        ? r.perPerson.toLocaleString("de-DE", { minimumFractionDigits: 0 }) + " €"
+        : "<i>no price</i>";
+      return (isWin ? "<b>" : "") + r.date + " — " + price + (isWin ? " ✅ cheapest</b>" : "");
+    });
+    return "<div style='margin-top:8px;line-height:1.6'>" + rows.join("<br>") + "</div>";
+  }
+
+  function cheapestResult() {
+    var best = null;
+    for (var i = 0; i < (state.results || []).length; i++) {
+      var r = state.results[i];
+      if (r.perPerson === null || r.perPerson === undefined) continue;
+      if (!best || r.perPerson < best.perPerson) best = r;
+    }
+    return best;
+  }
+
+  function goToIdeaPageForNextDate() {
+    // Back to the package page to start the next date's search from scratch. A full
+    // navigation (not history.back()) because the booking flow's own back behaviour is
+    // unreliable and may restore a cached summary rather than a fresh form.
+    var url = state.ideaUrl;
+    if (!url) {
+      clearState();
+      say("Lost track of the package page, so the scan can't continue.<br>" + resultsTable());
+      return;
+    }
+    setPhase("click_book");
+    setTimeout(function () { location.href = url; }, 400);
+  }
+
+  function phaseReadPrice() {
+    say(scanProgressPrefix() + "Reading the price for <b>" + DATE + "</b>…");
+    var tries = 0;
+    // The price is rendered with the summary, but the summary itself may still be loading,
+    // so poll until a figure appears rather than reading once and recording a blank.
+    var iv = setInterval(function () {
+      attach();
+      var p = readSummaryPrices();
+      var done = (p.perPerson !== null || p.total !== null);
+      if (!done && ++tries < 50) return;   // ~20s
+      clearInterval(iv);
+
+      if (!done) recordPrices();           // log candidates so an odd layout can be mapped
+      state.results = state.results || [];
+      state.results.push({
+        date: DATE,
+        perPerson: p.perPerson,
+        total: p.total,
+        source: p.source
+      });
+
+      var shown = p.perPerson !== null ? p.perPerson + " € p.P." : "no price found";
+      say(scanProgressPrefix() + "<b>" + DATE + "</b>: " + shown + resultsTable());
+
+      state.idx = (state.idx || 0) + 1;
+      if (state.idx < state.dates.length) {
+        DATE = state.dates[state.idx];
+        state.date = DATE;
+        state.originalDate = DATE;
+        state.flexDays = 0;
+        saveState(state);
+        goToIdeaPageForNextDate();
+        return;
+      }
+
+      // All dates scanned — re-quote the cheapest one and stop there for the human.
+      var best = cheapestResult();
+      if (!best) {
+        clearState();
+        say("Scanned all " + state.dates.length + " dates but could not read a price on any " +
+            "of them.<br>" + resultsTable() +
+            "<br>Open the browser console for the captured page structure.");
+        return;
+      }
+      state.finalRun = true;
+      DATE = best.date;
+      state.date = best.date;
+      state.originalDate = best.date;
+      state.flexDays = 0;
+      saveState(state);
+      say("✅ Cheapest is <b>" + best.date + "</b> at <b>" + best.perPerson + " € p.P.</b>" +
+          resultsTable() + "<br>Re-quoting that date now…");
+      goToIdeaPageForNextDate();
+    }, 400);
+  }
+
   function phaseSummary() {
     say("Reached the summary. Looking for <b>Save &amp; overwrite</b>…");
     recordButtons(); // log controls for selector mapping
+    // Snapshot the scan's findings before clearState() wipes them, so the final overlay can
+    // still show which date won and what the alternatives cost.
+    var scanSummary = state.scan ? resultsTable() : "";
+    var wasScan = state.scan;
     waitFor(findSaveOverwriteButton, function (btn) {
       clearState(); // automation is done — the human decides from here
       btn.style.outline = "4px solid #22c55e";
       btn.style.outlineOffset = "3px";
       try { btn.scrollIntoView({ behavior: "smooth", block: "center" }); } catch (e) {}
-      say("✅ Ready — date is <b>" + DATE + "</b>.<br>Review the trip, then click the highlighted " +
+      say((wasScan ? "✅ <b>Cheapest of " + scanSummary.split("<br>").length + " dates</b> — " : "✅ Ready — ") +
+          "date is <b>" + DATE + "</b>." + scanSummary +
+          "<br>Review the trip, then click the highlighted " +
           "<b>Save &amp; overwrite the existing package</b> button to finish.<br>" +
           "<b>The AI will never click “Book the trip”.</b>");
     }, function () {
       clearState();
       say("Summary reached, but couldn’t spot <b>Save &amp; overwrite</b> by name.<br>" +
+          scanSummary +
           "<small>Controls here: " + recordButtons(true) + "</small><br>" +
           "Click <b>Save and overwrite the existing package</b> by hand — never “Book the trip”.");
     }, 80, 400);

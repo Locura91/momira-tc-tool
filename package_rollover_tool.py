@@ -33,7 +33,7 @@ that exact change in Travel Compositor's normal edit screen and click Save there
 """
 import re
 import unicodedata
-from datetime import date
+from datetime import date, timedelta
 
 import streamlit as st
 
@@ -400,8 +400,38 @@ def _render_rollover_body(pkg_id, title, current_price, pax, key_prefix,
     )
     chosen_str = chosen.strftime("%d.%m.%Y")
 
+    # CONFIRMED REAL REQUEST (operator, 2026-11-23): "the tool opens and starts the whole
+    # process for 7 different dates, and only the one date with the lowest price will be
+    # displayed... so that our prices will be lower". This extends the already-confirmed rule
+    # from 2026-08-21 ("the tool is testing minimum 3 different days and the cheapest offer
+    # has to be reviewed by humans") from 3 days to 7, and finally gives the DYNAMIC-package
+    # path a way to test candidate days at all — package_rollover_rules.py records that as a
+    # known gap, because no server-side re-quote endpoint exists and Cloudflare blocks this
+    # server from momira.travel. The browser extension is the only place the quotes can be
+    # taken, so the scan runs there: 7 searches back to back in one tab, cheapest wins, and
+    # the human still accepts (never an automatic overwrite).
+    scan_7 = st.checkbox(
+        "Scan 7 dates and keep the cheapest",
+        value=False,
+        key=f"{key_prefix}_scan7",
+        help="Runs the whole search for the chosen date and the following 6 days, one after "
+             "another in the same tab, reads the price per person each time, then re-quotes "
+             "the cheapest and stops there for you to accept. Takes a few minutes. Only "
+             "useful for packages that can depart on any day.",
+    )
+    scan_count = 7 if scan_7 else 1
+
     st.write("")
-    st.markdown(f"New departure date: **`{chosen_str}`**")
+    if scan_7:
+        _last = chosen + timedelta(days=scan_count - 1)
+        st.markdown(
+            f"Scanning **{scan_count} dates**: `{chosen_str}` → "
+            f"`{_last.strftime('%d.%m.%Y')}`"
+        )
+        st.caption("The cheapest of the seven is re-quoted at the end and highlighted for you "
+                   "to accept. Nothing is overwritten automatically.")
+    else:
+        st.markdown(f"New departure date: **`{chosen_str}`**")
 
     # Opens the TC idea page in a new tab with the chosen date in the URL
     # (?tcr=DD.MM.YYYY). The Chrome extension on momira.travel reads it and automates:
@@ -418,6 +448,8 @@ def _render_rollover_body(pkg_id, title, current_price, pax, key_prefix,
 
     _sep = "&" if "?" in package_url else "?"
     _rollover_url = package_url + _sep + "tcr=" + _quote(chosen_str)
+    if scan_count > 1:
+        _rollover_url += "&tcrscan=" + str(scan_count)
 
     _bid = f"{key_prefix}_rollover_btn"
     components.html(
@@ -460,9 +492,12 @@ def _render_rollover_body(pkg_id, title, current_price, pax, key_prefix,
                        "The title-derived slug is wrong for this package — try the "
                        "slug-free URL:")
             st.code(_bare, language=None)
+            _bare_url = _bare + "?tcr=" + _quote(chosen_str)
+            if scan_count > 1:
+                _bare_url += "&tcrscan=" + str(scan_count)
             st.link_button(
                 "Open without the title slug",
-                _bare + "?tcr=" + _quote(chosen_str),
+                _bare_url,
                 use_container_width=True,
             )
         st.markdown(
