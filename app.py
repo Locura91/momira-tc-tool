@@ -871,17 +871,48 @@ st.markdown("<style>html { font-size: 106%; }</style>", unsafe_allow_html=True)
 # month the same size.
 st.markdown("""
 <style>
-  /* Streamlit's BaseWeb date picker renders the month grid as [role='grid']
-     inside the popup. Pin the grid to the 6-row worst-case so switching months
-     doesn't change its height and the nav arrows stay anchored. */
-  div[data-baseweb="calendar"] [role="grid"] {
-    min-height: 240px;
+  /* CONFIRMED REAL BUG (operator, 2026-11-23, reconfirmed with screenshots):
+     Streamlit's date-picker shrinks when a month has fewer week rows (Feb vs Jan),
+     so the back/forward arrows drift up and down and fast-clicking misses them.
+     Lock the calendar to the 6-row worst case so the top of the popup, and the
+     arrows inside it, stay anchored whichever month is displayed.
+
+     Using !important because Streamlit's own inline flex styles have a higher
+     specificity than a class rule - without it the min-height is ignored. */
+
+  /* The outermost popover that holds the calendar */
+  div[data-baseweb="popover"]:has(div[data-baseweb="calendar"]),
+  div[data-baseweb="popover"]:has([role="grid"]) {
+    height: 340px !important;
+    min-height: 340px !important;
   }
-  /* The whole popup wrapper too - the header + grid + optional quick-select footer.
-     Reserve ~320px so the entire panel (and therefore the nav arrows above the
-     grid) stays at a fixed vertical position whichever month is on screen. */
-  div[data-baseweb="calendar"] {
-    min-height: 300px;
+
+  /* The calendar component itself */
+  div[data-baseweb="calendar"],
+  [data-baseweb="calendar"] {
+    height: 320px !important;
+    min-height: 320px !important;
+    display: flex !important;
+    flex-direction: column !important;
+  }
+
+  /* The month grid (day numbers) - 6 rows worst case, ~40px per row */
+  div[data-baseweb="calendar"] [role="grid"],
+  [data-baseweb="calendar"] [role="grid"] {
+    height: 260px !important;
+    min-height: 260px !important;
+  }
+
+  /* The container that holds the weekday row + 6 week rows (rowgroup) */
+  div[data-baseweb="calendar"] [role="rowgroup"] {
+    min-height: 240px !important;
+  }
+
+  /* Belt and braces: if the calendar still shrinks, pin the WHOLE popover layer
+     via its fixed positioned wrapper (BaseWeb sometimes wraps the popup in
+     layered-overlays-container or a Floating UI portal). */
+  div[data-baseweb="layer"] div[data-baseweb="popover"]:has(div[data-baseweb="calendar"]) {
+    min-height: 340px !important;
   }
 </style>
 """, unsafe_allow_html=True)
