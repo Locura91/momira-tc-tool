@@ -444,29 +444,32 @@ def _render_rollover_body(pkg_id, title, current_price, pax, key_prefix,
     # that don't know it. The extension still accepts the #tcr= form so an older build
     # keeps working.
     from urllib.parse import quote as _quote
-    import streamlit.components.v1 as components
 
     _sep = "&" if "?" in package_url else "?"
     _rollover_url = package_url + _sep + "tcr=" + _quote(chosen_str)
     if scan_count > 1:
         _rollover_url += "&tcrscan=" + str(scan_count)
 
-    _bid = f"{key_prefix}_rollover_btn"
-    components.html(
-        '<button id="' + _bid + '" style="'
-        "background:#FF4B4B;color:white;border:none;border-radius:8px;"
-        "padding:12px 24px;font-size:16px;cursor:pointer;width:100%;"
-        'font-weight:600;"'
-        ' onmouseover="this.style.background=\'#E03E3E\'"'
-        ' onmouseout="this.style.background=\'#FF4B4B\'">'
-        "&#128640;  Start rollover in Travel Compositor"
-        "</button>"
-        "<script>"
-        'document.getElementById("' + _bid + '").addEventListener("click",function(){'
-        'window.open("' + _rollover_url + '","_blank");'
-        "});"
-        "</script>",
-        height=55,
+    # CONFIRMED REAL SYMPTOM (operator, 2026-11-23): "I click start rollover in Travel
+    # Compositor and nothing happened... this worked already this afternoon."
+    #
+    # This used to be a hand-built <button> inside a components.html IFRAME whose click
+    # handler called window.open(). Chrome treats window.open() from a sandboxed component
+    # iframe as a popup: when it is blocked the call just returns null, so the click fires
+    # and absolutely nothing visible happens - no new tab, no error, nothing for the
+    # operator to react to. Whether it is blocked depends on the browser's popup settings
+    # and on the sandbox flags Streamlit happens to put on the component iframe, which is
+    # why it could work one afternoon and silently stop the next.
+    #
+    # st.link_button renders a real <a href target="_blank"> in the MAIN document, not in
+    # an iframe. A user-initiated anchor navigation is not a popup, so no popup blocker and
+    # no iframe sandbox is involved, and the URL is an href attribute rather than a string
+    # pasted into a JavaScript literal. Same look, no JavaScript at all.
+    st.link_button(
+        "🚀  Start rollover in Travel Compositor",
+        _rollover_url,
+        type="primary",
+        use_container_width=True,
     )
     st.caption("💻 Laptop with the extension installed: this drives the rollover automatically to "
                "the summary, then stops so you can accept. 📱 Phone or no extension: the page opens "
