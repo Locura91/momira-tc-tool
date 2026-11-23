@@ -377,8 +377,16 @@ def find_missing_reverse_transports(transports: List[Dict[str, Any]], api_client
 
     def _strip_qualifier(name: str) -> str:
         """Strip parenthetical qualifiers like '(Jetty)', '(Airport / Town)' from a city name
-        for looser matching — 'Koh Lipe (Jetty)' and 'Koh Lipe' are the same place."""
-        return re.sub(r"\s*\([^)]*\)\s*", " ", name).strip()
+        for looser matching — 'Koh Lipe (Jetty)' and 'Koh Lipe' are the same place.
+
+        CONFIRMED REAL BUG (2026-11-23): this said `re.sub`, but this module imports the
+        regex module as `_re` (see the top of the file) and never binds the bare name `re`.
+        So every call raised NameError - and because _base_signature is called while BUILDING
+        the signature sets, the whole of find_missing_reverse_transports blew up rather than
+        degrading. The qualifier-stripping fallback this function exists to provide had
+        therefore never once run. tests/test_2026_09_22_transport_missing_reverse_and_
+        duplicate_combined.py was red on exactly this."""
+        return _re.sub(r"\s*\([^)]*\)\s*", " ", name).strip()
 
     def _base_signature(sig):
         if not sig:

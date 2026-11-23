@@ -34,6 +34,71 @@ _TRANSPORT_TYPE_OPTIONS = [
 _TRANSPORT_TYPE_LABEL_TO_KEY = {label: key for key, label in _TRANSPORT_TYPE_OPTIONS}
 
 
+def _transfer_occupancy_rows(route, changes_by_code):
+    """One display row per occupancy (1, 2, 3 … maxOccupancy) for a Transfer.
+
+    CONFIRMED REAL REQUEST (operator, 2026-11-23): "the order shall be always 1 packs,
+    2 packs, and then 1 to 6 packs if you do it like this way. But it will be better […]
+    3 packs, 4 packs, 5 packs, 6 packs, 7 packs, and 9 packs, 8 packs also to add it in
+    one line."
+
+    The old table sorted the raw brackets by (min_pax, max_pax), which interleaved the
+    catch-all default range with the single-occupancy overrides and produced the order the
+    operator photographed: 1–1 pax, then 1–6 pax, then 2–2 pax. Unreadable, and it hid the
+    fact that occupancies 3–6 are priced at all.
+
+    Listing one row per occupancy also makes the table match what Apply actually writes:
+    _rebuild_transfer_prices runs with force_explicit_all once any child price is present,
+    so every occupancy ends up with its own pricesByOccupancy entry in TC. An occupancy with
+    no override of its own inherits the default rate, and the row says so in its Modality
+    cell rather than leaving the operator to infer it.
+    """
+    opts = [o for o in (route.get("options") or []) if not o.get("fetch_failed")]
+    if not opts:
+        return []
+    raw = route.get("raw") or {}
+    try:
+        max_occ = int(raw.get("maxOccupancy") or 0)
+    except (TypeError, ValueError):
+        max_occ = 0
+    if max_occ <= 0:
+        max_occ = max((int(o.get("max_pax") or 0) for o in opts), default=1)
+    max_occ = max(1, min(max_occ, 9))  # TC tops out at 9 passengers per booking
+
+    explicit = {int(o["min_pax"]): o for o in opts
+                if o.get("min_pax") == o.get("max_pax") and o.get("min_pax")}
+    default = next((o for o in opts if o.get("code") == price_refresh.DEFAULT_BRACKET_CODE), None)
+    if default is None:
+        default = max(opts, key=lambda o: (int(o.get("max_pax") or 0) - int(o.get("min_pax") or 0)))
+
+    rows = []
+    for occ in range(1, max_occ + 1):
+        bracket = explicit.get(occ) or default
+        if bracket is None:
+            continue
+        code = bracket.get("code")
+        change = changes_by_code.get(code)
+        adult = change["new"] if change else round(float(bracket.get("unit_price", 0)), 2)
+        if change and change.get("child_new") is not None:
+            child = round(float(change["child_new"]), 2)
+        else:
+            child = round(float(bracket.get("unit_price_child", 0.0)), 2)
+        if change and change.get("infant_new") is not None:
+            infant = round(float(change["infant_new"]), 2)
+        else:
+            infant = round(float(bracket.get("unit_price_infant", 0.0)), 2)
+        inherited = occ not in explicit
+        rows.append({
+            "occ": occ,
+            "adult": adult,
+            "child": child,
+            "infant": infant,
+            "modality": (bracket.get("name") or code or "?") + (" *(default)*" if inherited else ""),
+            "changed": bool(change) and abs(adult - float(change["old"])) >= 0.005,
+        })
+    return rows
+
+
 def render_price_refresh_flow(client, preselected_kind=None):
     """Update the prices of transports that already exist, from a new rate sheet.
 
@@ -616,7 +681,15 @@ def render_price_refresh_flow(client, preselected_kind=None):
                 _base_code_in_changes = next((c for c in p["changes"] if c["code"] == _base_option["code"]), None)
                 _base_price = round(float(_base_code_in_changes["new"]) if _base_code_in_changes else _base_option["unit_price"], 2)
             _rows = []
-            for o in sorted(_all_options, key=lambda x: (x.get("min_pax", 0), x.get("max_pax", 0))):
+            if _is_transfer:
+                _by_code = {c["code"]: c for c in p["changes"]}
+                for _r in _transfer_occupancy_rows(route, _by_code):
+                    _adult = f"**{_r['adult']}**" if _r["changed"] else f"{_r['adult']}"
+                    _st = "🔴 changed" if _r["changed"] else "✅ correct"
+                    _rows.append(f"| {_r['occ']} pax | {_adult} {_ccy} | {_r['child']} | "
+                                 f"{_r['infant']} | {_r['modality']} | {_st} |")
+            for o in ([] if _is_transfer else
+                      sorted(_all_options, key=lambda x: (x.get("min_pax", 0), x.get("max_pax", 0)))):
                 _code = o.get("code") or o.get("name") or "?"
                 _name = o.get("name") or _code
                 _pax_label = f"{o.get('min_pax', '?')}–{o.get('max_pax', '?')} pax"
@@ -624,10 +697,8 @@ def render_price_refresh_flow(client, preselected_kind=None):
                     _c = next(c for c in p["changes"] if c["code"] == _code)
                     _full = _c["new"]
                     _status = "🔴 changed" if _full != _c["old"] else "✅"
-                    if _is_transfer:
-                        _tc = round(_c.get("child_new", 0.0) or 0.0, 2)
-                        _ti = round(_c.get("infant_new", 0.0) or 0.0, 2)
-                        _rows.append(f"| {_pax_label} | **{_full}** {_ccy} | {_tc} | {_ti} | {_name} | {_status} |")
+                    if False:
+                        pass
                     else:
                         if _base_option and _code == _base_option["code"]:
                             _supp = "— *(base)*"
@@ -639,10 +710,8 @@ def render_price_refresh_flow(client, preselected_kind=None):
                                      f"{_base_price or _full} | {_supp} | {_name} | {_status} |")
                 else:
                     _full = round(float(o.get("unit_price", 0)), 2)
-                    if _is_transfer:
-                        _uc = round(o.get("unit_price_child", 0.0), 2)
-                        _ui = round(o.get("unit_price_infant", 0.0), 2)
-                        _rows.append(f"| {_pax_label} | {_full} {_ccy} | {_uc} | {_ui} | {_name} | ✅ correct |")
+                    if False:
+                        pass
                     else:
                         if _base_option and _code == _base_option["code"]:
                             _supp = "— *(base)*"
@@ -655,8 +724,8 @@ def render_price_refresh_flow(client, preselected_kind=None):
             if _rows:
                 if _is_transfer:
                     st.markdown(
-                        f"\n| Bracket | Adult | Child | Infant | Modality | Status |\n"
-                        f"|---------|-------|-------|--------|----------|--------|\n"
+                        f"\n| Occupancy | Adult | Child | Infant | Modality | Status |\n"
+                        f"|-----------|-------|-------|--------|----------|--------|\n"
                         + "\n".join(_rows)
                     )
                 else:
@@ -710,14 +779,17 @@ def render_price_refresh_flow(client, preselected_kind=None):
                     _opts_u, forced_bracket=route.get("base_bracket_override"))
                 _base_price_u = round(float(_base_u.get("unit_price", 0)), 2)
             _rows_u = []
-            for o in sorted(_opts_u, key=lambda x: (x.get("min_pax", 0), x.get("max_pax", 0))):
+            if _is_transfer_u:
+                for _r in _transfer_occupancy_rows(route, {}):
+                    _rows_u.append(f"| {_r['occ']} pax | {_r['adult']} {_ccy_u} | "
+                                   f"{_r['child']} | {_r['infant']} | {_r['modality']} |")
+            for o in ([] if _is_transfer_u else
+                      sorted(_opts_u, key=lambda x: (x.get("min_pax", 0), x.get("max_pax", 0)))):
                 _full_u = round(float(o.get("unit_price", 0)), 2)
                 _name_u = o.get("name") or o.get("code") or "?"
                 _pax_u = f"{o.get('min_pax', '?')}–{o.get('max_pax', '?')} pax"
-                if _is_transfer_u:
-                    _uc_u = round(o.get("unit_price_child", 0.0), 2)
-                    _ui_u = round(o.get("unit_price_infant", 0.0), 2)
-                    _rows_u.append(f"| {_pax_u} | {_full_u} {_ccy_u} | {_uc_u} | {_ui_u} | {_name_u} |")
+                if False:
+                    pass
                 else:
                     if _base_u and o.get("code") == _base_u.get("code"):
                         _supp_u = "— *(base)*"
@@ -741,8 +813,8 @@ def render_price_refresh_flow(client, preselected_kind=None):
             if _rows_u:
                 if _is_transfer_u:
                     st.markdown(
-                        f"\n| Bracket | Adult | Child | Infant | Modality |\n"
-                        f"|---------|-------|-------|--------|----------|\n"
+                        f"\n| Occupancy | Adult | Child | Infant | Modality |\n"
+                        f"|-----------|-------|-------|--------|----------|\n"
                         + "\n".join(_rows_u)
                     )
                 else:
