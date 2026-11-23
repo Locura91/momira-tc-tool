@@ -95,21 +95,25 @@
 
   // ── element finders (real TC selectors first, then fallbacks) ─────────────────────────────
   function findBookButton() {
-    var btn = document.querySelector("a.button-select-idea");
-    if (btn) return btn;
-    btn = document.querySelector("[id*='directBook']");
-    if (btn) return btn;
+    // "Book directly without changes" sits right next to "Customize & Book Your Trip" and both
+    // carry the same CSS class (a.button-select-idea), so a plain class selector grabs the wrong
+    // one. Match the visible text first, and never return a "Customize" button.
     var texts = ["book directly without changes", "book directly",
                  "reserva directamente sin cambios", "reservar directamente"];
+    var all = document.querySelectorAll("a, button");
     var candidates = [];
-    document.querySelectorAll("a, button").forEach(function (el) {
-      var t = textOf(el);
-      for (var i = 0; i < texts.length; i++) if (t.indexOf(texts[i]) > -1) { candidates.push(el); break; }
-    });
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i], t = textOf(el);
+      if (t.indexOf("customi") > -1) continue; // "Customize & Book Your Trip" is never the target
+      for (var j = 0; j < texts.length; j++) if (t.indexOf(texts[j]) > -1) { candidates.push(el); break; }
+    }
     if (candidates.length) {
       candidates.sort(function (a, b) { return (a.textContent || "").length - (b.textContent || "").length; });
       return candidates[0];
     }
+    // Fallback to the class/id selectors, but skip a Customize button if those are shared.
+    var byClass = document.querySelectorAll("a.button-select-idea, [id*='directBook']");
+    for (var k = 0; k < byClass.length; k++) if (textOf(byClass[k]).indexOf("customi") === -1) return byClass[k];
     return null;
   }
 
