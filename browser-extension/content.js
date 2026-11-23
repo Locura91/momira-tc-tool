@@ -149,13 +149,23 @@
   // The rollover "accept" button. Matched by text; selector is confirmed via record mode below.
   var SAVE_OVERWRITE_TEXTS = [
     "save and overwrite", "save & overwrite", "overwrite the existing", "overwrite existing package",
-    "overwrite package", "guardar y sobrescribir", "sobrescribir", "speichern und überschreiben", "überschreiben"
+    "overwrite package", "overwrite the existing trip", "overwrite existing trip",
+    "guardar y sobrescribir", "sobrescribir", "speichern und überschreiben", "überschreiben"
   ];
   function findSaveOverwriteButton() {
-    var els = document.querySelectorAll("a, button, input[type='submit']");
+    // Widen selector: TC may render the overwrite action as a div, span or label, not just a/button
+    var els = document.querySelectorAll("a, button, input[type='submit'], div[role='button'], span[role='button'], [onclick], .confirm-trip, [class*='overwrite'], [class*='Overwrite'], [id*='overwrite'], [id*='Overwrite']");
     for (var i = 0; i < els.length; i++) {
       var t = textOf(els[i]);
       for (var j = 0; j < SAVE_OVERWRITE_TEXTS.length; j++) if (t.indexOf(SAVE_OVERWRITE_TEXTS[j]) > -1) return els[i];
+    }
+    // Broadest fallback: scan ALL elements for the text
+    var allEls = document.querySelectorAll("*");
+    for (var k = 0; k < allEls.length; k++) {
+      var el = allEls[k];
+      if (el.children && el.children.length > 3) continue; // skip containers
+      var t2 = textOf(el);
+      for (var j2 = 0; j2 < SAVE_OVERWRITE_TEXTS.length; j2++) if (t2.indexOf(SAVE_OVERWRITE_TEXTS[j2]) > -1) return el;
     }
     return null;
   }
@@ -173,7 +183,7 @@
   // Record mode: dump every clickable control with its text + a selector hint, so the exact
   // "Save and overwrite" / "Book the trip" selectors can be mapped from a real run.
   function recordButtons(compact) {
-    var els = document.querySelectorAll("a, button, input[type='submit']");
+    var els = document.querySelectorAll("a, button, input[type='submit'], div[role='button'], span[role='button'], [onclick], [class*='overwrite'], [class*='Overwrite'], [id*='overwrite'], [id*='Overwrite'], .confirm-trip");
     var out = [];
     for (var i = 0; i < els.length && out.length < 30; i++) {
       var el = els[i];
