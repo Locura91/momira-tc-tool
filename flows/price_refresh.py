@@ -527,6 +527,13 @@ def render_price_refresh_flow(client, preselected_kind=None):
                             key=f"pr_child_{p['index']}_{c['code']}_{c.get('start_date') or ''}"
                                 f"_{c.get('end_date') or ''}_{p.get('widget_token', 'g0')}",
                             label_visibility="collapsed")
+                    if c.get("infant_new") is not None:
+                        c["infant_new"] = st.number_input(
+                            f"New infant price ({c['min_pax']}-{c['max_pax']} pax){_period_label}",
+                            min_value=0.0, step=1.0, value=float(c["infant_new"]),
+                            key=f"pr_infant_{p['index']}_{c['code']}_{c.get('start_date') or ''}"
+                                f"_{c.get('end_date') or ''}_{p.get('widget_token', 'g0')}",
+                            label_visibility="collapsed")
                 with pcol1:
                     # CONFIRMED REAL REQUEST (product owner): red when the price to apply
                     # differs from what's already live, green when (after any hand-edit above)
@@ -565,8 +572,13 @@ def render_price_refresh_flow(client, preselected_kind=None):
                             st.markdown(f"&nbsp;&nbsp;&nbsp;↳ child: :green[**{_co}**] {_ccy} — *unchanged*")
                         else:
                             st.markdown(f"&nbsp;&nbsp;&nbsp;↳ child: {_co} → :red[**{_cn}**] {_ccy}{_csrc_label}")
-                        if c.get("infant_old") is not None and c["infant_old"] > 0:
-                            st.caption(f"&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;infant: {c['infant_old']} {_ccy} (scales with adult)")
+                        if c.get("infant_new") is not None or (c.get("infant_old") is not None and c["infant_old"] > 0):
+                            _io = c.get("infant_old", 0.0)
+                            _in = c.get("infant_new", _io)
+                            if abs(_in - _io) < 0.005:
+                                st.markdown(f"&nbsp;&nbsp;&nbsp;↳ infant: :green[**{_io}**] {_ccy} — *unchanged*")
+                            else:
+                                st.markdown(f"&nbsp;&nbsp;&nbsp;↳ infant: {_io} → :red[**{_in}**] {_ccy}")
             bits = []
             if finding.get("matched_row"):
                 bits.append(f'from the row *“{finding["matched_row"]}”*')
