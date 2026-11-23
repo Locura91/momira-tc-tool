@@ -358,7 +358,7 @@ def _render_rollover_body(pkg_id, title, current_price, pax, key_prefix,
         "New start date",
         value=_five_months_ahead(),
         min_value=date.today(),
-        format="DD.MM.YYYY",
+        format="DD/MM/YYYY",
         key=f"{key_prefix}_dialog_date",
     )
     chosen_str = chosen.strftime("%d.%m.%Y")
