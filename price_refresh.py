@@ -440,28 +440,49 @@ def load_supplier_transports(client, supplier_id: str,
 DEFAULT_BRACKET_CODE = "__default__"
 
 
+def _money_amount(val: Any) -> float:
+    """Pull the numeric amount from either a TransferMoneyVO {amount,currency} dict or a bare
+    number. TC's pricesByOccupancy entries use the dict shape per schemas.TransferMoneyVO; the
+    legacy code paths sometimes still store bare numbers for compactness."""
+    if isinstance(val, dict):
+        return _num(val.get("amount"))
+    return _num(val)
+
+
 def _transfer_brackets(record: Dict[str, Any]) -> List[Dict[str, Any]]:
     """A transfer's prices, expressed as brackets so both product types look the same upstream.
 
     CONFIRMED SEMANTICS (schemas.TransferOccupancyPriceVO): basePrice is the DEFAULT rate for
     any occupancy, and pricesByOccupancy holds an entry ONLY for an occupancy whose rate
     genuinely differs - a solo surcharge, typically. So the default is modelled as one bracket
-    spanning min to max occupancy, and each explicit entry as a bracket of exactly one."""
+    spanning min to max occupancy, and each explicit entry as a bracket of exactly one.
+
+    CONFIRMED CHILD/INFANT (product owner, 2026-11-23): each pricesByOccupancy entry can also
+    carry its own childPrice and infantPrice (TransferMoneyVO dicts). Earlier refreshes read
+    only basePrice and dropped those on write, silently wiping any child rate the operator had
+    set for an occupancy >=2. They now ride through on the bracket as unit_price_child /
+    unit_price_infant so _rebuild_transfer_prices can preserve them."""
     base = _num(record.get("basePrice"))
     min_occ = int(_num(record.get("minOccupancy"), 1)) or 1
     max_occ = int(_num(record.get("maxOccupancy"), 1)) or 1
     brackets = [{"code": DEFAULT_BRACKET_CODE, "min_pax": min_occ, "max_pax": max_occ,
-                 "unit_price": round(base, 2), "name": "default rate", "raw": None}]
+                 "unit_price": round(base, 2),
+                 "unit_price_child": 0.0, "unit_price_infant": 0.0,
+                 "name": "default rate", "raw": None}]
     for entry in (record.get("pricesByOccupancy") or []):
         if not isinstance(entry, dict):
             continue
         occ = int(_num(entry.get("occupancy"), 0))
         if occ <= 0:
             continue
-        amount = entry.get("basePrice")
-        amount = _num(amount.get("amount")) if isinstance(amount, dict) else _num(amount)
+        adult = _money_amount(entry.get("basePrice"))
+        child = _money_amount(entry.get("childPrice"))
+        infant = _money_amount(entry.get("infantPrice"))
         brackets.append({"code": f"occ{occ}", "min_pax": occ, "max_pax": occ,
-                         "unit_price": round(amount, 2), "name": f"{occ} pax", "raw": dict(entry)})
+                         "unit_price": round(adult, 2),
+                         "unit_price_child": round(child, 2),
+                         "unit_price_infant": round(infant, 2),
+                         "name": f"{occ} pax", "raw": dict(entry)})
     return sorted(brackets, key=lambda b: (b["min_pax"], b["max_pax"]))
 
 
@@ -2060,37 +2081,81 @@ def apply_ticket_proposals(client, supplier_id: str, proposals: List[Dict[str, A
 
 
 def _rebuild_transfer_prices(route: Dict[str, Any],
-                             new_unit_prices: Dict[str, float]) -> Dict[str, Any]:
+                             new_unit_prices: Dict[str, float],
+                             new_child_prices: Optional[Dict[str, float]] = None,
+                             new_infant_prices: Optional[Dict[str, float]] = None,
+                             force_explicit_all: bool = False) -> Dict[str, Any]:
     """New prices onto a transfer record, keeping its structure and its DATES.
 
     CONFIRMED REAL RULE (product owner): "if the price will be refreshed, the date of Transfer
     and the date of Transports will most likely be until 2049 or even 2099, but the price must
     still be updated." So startDate and endDate are never touched here - the document's own
     season is irrelevant to a product deliberately left open-ended, and overwriting a 2099 end
-    date with a rate sheet's July 2027 would silently retire the product next summer."""
+    date with a rate sheet's July 2027 would silently retire the product next summer.
+
+    CONFIRMED CHILD/INFANT (product owner, 2026-11-23): each pricesByOccupancy entry can carry
+    its own childPrice/infantPrice (TransferMoneyVO dicts). Earlier rebuilds dropped those on
+    write, silently wiping any child rate the operator had set. They are now carried forward -
+    from the bracket's loaded unit_price_child/unit_price_infant unless the caller supplies a
+    fresh value in new_child_prices / new_infant_prices.
+
+    force_explicit_all=True (set by the Thailand-style CSV bulk importer) opts out of the
+    "entry equal to the default is redundant" skip, so every occupancy 1..maxOccupancy ends up
+    with its own explicit row - which is the ONLY way to attach child prices to occupancies
+    that would otherwise fall through to the (child-less) default basePrice."""
     payload = json.loads(json.dumps(route["raw"]))
     brackets = route["options"]
+    new_child_prices = new_child_prices or {}
+    new_infant_prices = new_infant_prices or {}
     resolved = {b["code"]: round(float(new_unit_prices.get(b["code"], b["unit_price"])), 2)
                 for b in brackets}
+    resolved_child = {b["code"]: round(float(new_child_prices.get(b["code"], b.get("unit_price_child", 0.0))), 2)
+                      for b in brackets}
+    resolved_infant = {b["code"]: round(float(new_infant_prices.get(b["code"], b.get("unit_price_infant", 0.0))), 2)
+                       for b in brackets}
     default = next((b for b in brackets if b["code"] == DEFAULT_BRACKET_CODE), None)
     base = resolved.get(DEFAULT_BRACKET_CODE, _num(payload.get("basePrice")))
     payload["basePrice"] = base
 
     currency = payload.get("currency") or "EUR"
+
+    def _money(amount: float, existing: Any) -> Dict[str, Any]:
+        """Wrap a numeric amount as a TransferMoneyVO dict, preserving the existing currency
+        when the field already held one (so we don't clobber THB with EUR)."""
+        ccy = (existing or {}).get("currency", currency) if isinstance(existing, dict) else currency
+        return {"amount": amount, "currency": ccy}
+
     entries = []
     for bracket in brackets:
         if bracket["code"] == DEFAULT_BRACKET_CODE:
             continue
         price = resolved[bracket["code"]]
-        if abs(price - base) < 0.005:
-            # An entry equal to the default is redundant - schemas.TransferOccupancyPriceVO
-            # exists only for occupancies that genuinely differ.
+        child_price = resolved_child[bracket["code"]]
+        infant_price = resolved_infant[bracket["code"]]
+        # Normally an entry equal to the default basePrice is redundant - per
+        # schemas.TransferOccupancyPriceVO, pricesByOccupancy only holds genuine overrides.
+        # BUT: child/infant prices live only on explicit entries (the top-level basePrice is
+        # adult-only), so when an entry carries any non-zero child/infant price it stays
+        # explicit even if its adult amount matches the default - otherwise the write would
+        # silently drop the child rate. force_explicit_all keeps every entry no matter what.
+        has_child_or_infant = child_price > 0.005 or infant_price > 0.005
+        matches_default_adult = abs(price - base) < 0.005
+        if matches_default_adult and not has_child_or_infant and not force_explicit_all:
             continue
         entry = dict(bracket.get("raw") or {"occupancy": bracket["min_pax"]})
-        existing = entry.get("basePrice")
-        entry["basePrice"] = {"amount": price,
-                              "currency": (existing or {}).get("currency", currency)
-                              if isinstance(existing, dict) else currency}
+        entry["basePrice"] = _money(price, entry.get("basePrice"))
+        # Only write a childPrice / infantPrice field when we have one to carry - leaving the
+        # field absent lets TC fall back to no child rate, matching the shape of a fresh entry.
+        if child_price > 0.005:
+            entry["childPrice"] = _money(child_price, entry.get("childPrice"))
+        elif "childPrice" in entry:
+            # The entry had a child price loaded, but the caller supplied 0 (or the bracket
+            # was wiped); preserve an explicit 0 so the server sees the delete.
+            entry["childPrice"] = _money(0.0, entry.get("childPrice"))
+        if infant_price > 0.005:
+            entry["infantPrice"] = _money(infant_price, entry.get("infantPrice"))
+        elif "infantPrice" in entry:
+            entry["infantPrice"] = _money(0.0, entry.get("infantPrice"))
         entries.append(entry)
     payload["pricesByOccupancy"] = entries
     if default is None:
