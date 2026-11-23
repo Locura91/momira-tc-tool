@@ -235,33 +235,42 @@ def _load_transports(client, supplier_id: str) -> Tuple[List[Dict], Optional[str
 # ── apply helpers ─────────────────────────────────────────────────────────────
 
 def _apply_transfer(client, supplier_id: str, product: Dict, new_ranges: List[Dict]) -> Dict:
-    """GET the transfer, merge stop sales, PUT it back."""
+    """GET the transfer, merge stop sales, PUT it back.
+
+    The returned dict carries the TC id and the count of ranges actually added so
+    the result banner can show '2 Transfers updated with 20 new stop-sale ranges'
+    and name each by TRANSFER-nnnnnn - the operator asked for this cross-check
+    after a confusing session where they weren't sure whether TC had actually
+    received the ranges they'd just applied (2026-11-23)."""
     tid = product["id"]
+    name = product["name"]
     try:
         rec = client.get_transfer(supplier_id, tid)
     except Exception as e:
-        return {"status": "failed", "name": product["name"],
+        return {"status": "failed", "name": name, "id": tid,
                 "detail": friendly_error_message(e)}
     if isinstance(rec, dict) and "error" in rec:
-        return {"status": "failed", "name": product["name"],
+        return {"status": "failed", "name": name, "id": tid,
                 "detail": str(rec.get("message") or rec.get("error"))}
     import stop_sales_parser as ssp
     live = [s for s in (rec.get("stopSales") or []) if isinstance(s, dict)]
     result = ssp.merge_stop_sales(live, new_ranges)
     if not result["added"]:
-        return {"status": "unchanged", "name": product["name"],
-                "detail": "every date was already blocked on this Transfer"}
+        return {"status": "unchanged", "name": name, "id": tid,
+                "detail": f"every date was already blocked on {tid}"}
     payload = dict(rec)
     payload["stopSales"] = result["merged"]
     try:
         res = client.update_transfer(supplier_id, payload)
     except Exception as e:
-        return {"status": "failed", "name": product["name"],
+        return {"status": "failed", "name": name, "id": tid,
                 "detail": friendly_error_message(e)}
     if isinstance(res, dict) and "error" in res:
-        return {"status": "failed", "name": product["name"],
+        return {"status": "failed", "name": name, "id": tid,
                 "detail": str(res.get("message") or res.get("error"))}
-    return {"status": "updated", "name": product["name"], "added": result["added"]}
+    return {"status": "updated", "name": name, "id": tid,
+            "added": result["added"],
+            "detail": f"{tid}: {len(result['added'])} new range(s) added"}
 
 
 def _apply_ticket(client, supplier_id: str, product: Dict, new_ranges: List[Dict]) -> List[Dict]:
@@ -488,6 +497,22 @@ def render_bulk_stop_sales_flow(client):
     for p in filtered_products:
         by_type.setdefault(p["kind"], []).append(p)
 
+    def _display_name(p: Dict) -> str:
+        """Append the TC product ID at the end of the display label - the operator
+        asked for this so a row can be cross-checked against the TC admin page by
+        number. Transfers read TRANSFER-nnnnnn, transports TRANSPORT-nnnnnn, etc.
+        Stored p['name'] and p['id'] stay unchanged - this is display-only."""
+        pid = p.get("id") or ""
+        if not pid:
+            return p.get("name") or ""
+        # Already looks like e.g. 'TRANSFER-454499' - just append, else prefix the
+        # kind to match TC's own ID naming (TRANSFER-, TRANSPORT-, TICKET-, ...).
+        if "-" in str(pid):
+            tag = pid
+        else:
+            tag = f"{p.get('kind', '').upper()}-{pid}" if p.get("kind") else pid
+        return f"{p.get('name') or ''} — {tag}"
+
     selected_products = []
     for pt in selected_types:
         items = by_type.get(pt, [])
@@ -495,7 +520,7 @@ def render_bulk_stop_sales_flow(client):
             continue
         with st.expander(f"{_TYPE_LABELS[pt]} ({len(items)})", expanded=True):
             for p in items:
-                if st.checkbox(p["name"], key=_wkey(p)):
+                if st.checkbox(_display_name(p), key=_wkey(p)):
                     selected_products.append(p)
     _set("bss_selected_ids", {p["id"] for p in selected_products})
     if not selected_products:
@@ -823,17 +848,25 @@ def render_bulk_stop_sales_flow(client):
             bar.progress((i + 1) / len(selected_products),
                          text=f"{i + 1}/{len(selected_products)}: {product['name']}")
             kind = product["kind"]
+            product_results: List[Dict] = []
             if kind == "Transfer":
-                r = _apply_transfer(client, supplier_id, product, new_ranges)
-                all_results.append(r)
+                product_results.append(_apply_transfer(client, supplier_id, product, new_ranges))
             elif kind == "Ticket":
-                all_results.extend(_apply_ticket(client, supplier_id, product, new_ranges))
+                product_results.extend(_apply_ticket(client, supplier_id, product, new_ranges))
             elif kind == "ClosedTour":
-                all_results.extend(_apply_tour(client, supplier_id, product, new_ranges))
+                product_results.extend(_apply_tour(client, supplier_id, product, new_ranges))
             elif kind == "Hotel":
-                all_results.extend(_apply_hotel(client, supplier_id, product, new_ranges))
+                product_results.extend(_apply_hotel(client, supplier_id, product, new_ranges))
             elif kind == "Transport":
-                all_results.extend(_apply_transport(client, supplier_id, product, new_ranges))
+                product_results.extend(_apply_transport(client, supplier_id, product, new_ranges))
+            # Stamp every result with the TC product id so the result banner can
+            # show e.g. TRANSFER-454499 next to each row (operator's cross-check
+            # request, 2026-11-23). Done here rather than in each _apply_* helper
+            # so a result that comes back without an id (sub-modality level) still
+            # knows which parent product it belonged to.
+            for r in product_results:
+                r.setdefault("id", product.get("id") or "")
+            all_results.extend(product_results)
         bar.empty()
         _set("bss_result", all_results)
         st.rerun()
@@ -845,12 +878,29 @@ def render_bulk_stop_sales_flow(client):
         unchanged = [r for r in results if r["status"] == "unchanged"]
 
         if updated:
-            st.success(f"✅ Stop sale applied to {len(updated)} modality/rate(s).")
+            # CONFIRMED REAL REQUEST (operator, 2026-11-23): after Apply, the operator
+            # wasn't sure if TC had actually received the 10-year stop sale because
+            # the success line was too vague. List every updated TC id with the count
+            # of ranges added, so the operator can click into each one on TC and
+            # cross-check. Counting ranges across all products too, since one Apply
+            # with 10 years x 2 products = 20 individual stop-sale records.
+            total_added = sum(len(r.get("added") or []) for r in updated)
+            st.success(f"✅ Stop sale applied to {len(updated)} modality/rate(s) — "
+                       f"**{total_added}** new stop-sale range(s) written in total.")
+            with st.expander(f"✅ {len(updated)} updated — click to see every TC id",
+                             expanded=True):
+                for r in updated:
+                    _rid = r.get("id") or ""
+                    _added_n = len(r.get("added") or [])
+                    st.markdown(f"- **{r['name']}** — `{_rid}` "
+                                f"({_added_n} range(s) added)")
         if unchanged:
             with st.expander(f"➖ {len(unchanged)} already blocked (nothing changed)"):
                 for r in unchanged:
-                    st.markdown(f"- **{r['name']}** — {r.get('detail', '')}")
+                    _rid = r.get("id") or ""
+                    st.markdown(f"- **{r['name']}** `{_rid}` — {r.get('detail', '')}")
         if failed:
             st.error(f"❌ {len(failed)} failed.")
             for r in failed:
-                st.markdown(f"- **{r['name']}**: {r.get('detail', '')}")
+                _rid = r.get("id") or ""
+                st.markdown(f"- **{r['name']}** `{_rid}`: {r.get('detail', '')}")
