@@ -70,10 +70,10 @@ _STATUS_COLOUR = {
 
 @st.dialog("🔁 Package Rollover")
 def _inline_rollover_dialog(pkg_id: str, title: str, current_price, pax: str | None,
-                            current_departure=None):
+                            current_departure=None, info=None):
     from package_rollover_tool import _render_rollover_body
     _render_rollover_body(pkg_id, title, current_price, pax, key_prefix="pst",
-                          current_departure=current_departure)
+                          current_departure=current_departure, info=info)
 
 
 @st.cache_resource
@@ -287,10 +287,19 @@ def render_package_staleness_tool():
                     day_to_day = api.get_holiday_package_day_to_day(api.microsite_id, row["pkg_id"])
                 _, current_price = _current_price_from(info, day_to_day)
                 pax = _extract_pax(info)
+                # Use the DETAIL response's title, not the list row's. The two responses can
+                # carry different title strings for the same package (the list falls back to
+                # `description` where the detail has a real `title`), and the rollover URL's
+                # slug is derived from whichever one is passed - so the same package opened
+                # from this screen vs. the Package Rollover screen could produce two
+                # different URLs, one of which lands on the momira.travel homepage.
+                from package_rollover_tool import _extract_title
+                _detail_title = _extract_title(info) or row["title"]
                 _inline_rollover_dialog(
                     pkg_id=row["pkg_id"],
-                    title=row["title"],
+                    title=_detail_title,
                     current_price=current_price,
                     pax=pax,
                     current_departure=row["dep_date"],
+                    info=info,
                 )

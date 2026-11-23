@@ -27,21 +27,40 @@
   function saveState(s) { try { sessionStorage.setItem(SS_KEY, JSON.stringify(s)); } catch (e) {} }
   function clearState() { try { sessionStorage.removeItem(SS_KEY); } catch (e) {} }
 
-  // ── seed from the URL hash on first arrival, else resume stored state ────────────────────
+  // ── seed from the URL on first arrival, else resume stored state ─────────────────────────
+  // The date is accepted from EITHER ?tcr=DD.MM.YYYY or #tcr=DD.MM.YYYY. The hash was the
+  // original channel, but an unrecognised fragment can send a client-side router to its
+  // home route, so the query form is read too and is what the tool now prefers to send.
   var state = loadState();
   try {
-    var m = (location.hash || "").match(/[#&]tcr=([^&]+)/);
+    var m = (location.search || "").match(/[?&]tcr=([^&]+)/) ||
+            (location.hash || "").match(/[#&]tcr=([^&]+)/);
     if (m) {
       var seedDate = decodeURIComponent(m[1]);
       state = { active: true, date: seedDate, originalDate: seedDate, flexDays: 0, phase: "click_book", ts: Date.now() };
       saveState(state);
       // strip so a refresh doesn't re-seed and TC's own navigations don't carry it forward
-      try { history.replaceState(null, "", location.pathname + location.search); } catch (e) {}
+      try {
+        var cleanSearch = (location.search || "").replace(/([?&])tcr=[^&]*&?/, "$1").replace(/[?&]$/, "");
+        history.replaceState(null, "", location.pathname + cleanSearch);
+      } catch (e) {}
     }
   } catch (e) {}
 
   if (!state || !state.active) return;
   if (!state.ts || Date.now() - state.ts > MAX_AGE_MS) { clearState(); return; }
+
+  // ── did we actually land on a package page? ──────────────────────────────────────────────
+  // CONFIRMED REAL SYMPTOM (operator, 2026-11-23): "it falls back to the main page of Travel
+  // Compositor instead of opening the URL and opening the package". momira.travel redirects a
+  // URL whose slug it cannot resolve to its own homepage. Until now the state machine kept
+  // running there, hunting for a "Book directly without changes" button that a homepage never
+  // has, and after 20 silent seconds reported only "not found" - which reads like the
+  // extension is broken rather than the URL being wrong. Detect the homepage explicitly and
+  // say so, so the operator knows to use the slug-free URL the tool now offers.
+  function looksLikeIdeaPage() {
+    return /\/idea\//.test(location.pathname) || /\/(booking|book|trip|search)/.test(location.pathname);
+  }
 
   var DATE = state.date; // DD.MM.YYYY
   var DATE_FLEX_DAYS = state.flexDays || 0; // how many days we've shifted forward so far
@@ -418,6 +437,16 @@
   }
 
   function phaseClickBook() {
+    if (!looksLikeIdeaPage()) {
+      clearState();
+      say("⚠️ This is <b>not the package page</b> — momira.travel redirected to " +
+          "<code>" + location.pathname + "</code>.<br><br>" +
+          "That means the URL the tool opened could not be resolved, almost always because " +
+          "the slug built from the package title does not match this package.<br><br>" +
+          "Go back to the tool, open <b>Manual fallback</b> and use the " +
+          "<b>slug-free URL</b> there.<br><br>Your date: <b>" + DATE + "</b>");
+      return;
+    }
     say("Date: <b>" + DATE + "</b><br>Looking for “Book directly without changes”…");
     waitFor(findBookButton, function (btn) {
       say("Clicking: <b>" + (btn.textContent || "").trim().substring(0, 40) + "</b>");

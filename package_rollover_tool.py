@@ -32,6 +32,7 @@ comparison (current departure/price vs. proposed departure/price) and tells the 
 that exact change in Travel Compositor's normal edit screen and click Save there themselves.
 """
 import re
+import unicodedata
 from datetime import date
 
 import streamlit as st
@@ -48,8 +49,18 @@ _PHASE_KEY = "pkr_phase"
 
 def _make_slug(title: str) -> str:
     """Converts a package title to a URL slug matching momira.travel's format.
-    Special chars (& : , etc.) are dropped; spaces become hyphens."""
-    s = title.lower()
+    Special chars (& : , etc.) are dropped; spaces become hyphens.
+
+    CONFIRMED REAL BUG (operator, 2026-11-23): "it falls back to the main page of Travel
+    Compositor instead of opening the URL and opening the package". Root cause: the old
+    `[^a-z0-9\\s-]` filter ran AFTER .lower() but BEFORE any transliteration, so every
+    non-ASCII letter was DELETED rather than folded - "Zürich" became "zrich", "Köln"
+    became "kln", "Nächte" became "nchte". momira.travel can't resolve those slugs and
+    redirects to its homepage, which is exactly the reported symptom. Unicode NFKD
+    decomposes "ü" into "u" + combining diaeresis, so dropping the combining marks leaves
+    the base letter instead of nothing."""
+    s = unicodedata.normalize("NFKD", title).lower()
+    s = "".join(c for c in s if not unicodedata.combining(c))
     s = re.sub(r'[^a-z0-9\s-]', '', s)   # drop & : , etc. — TC never substitutes 'and'
     s = re.sub(r'\s+', '-', s.strip())
     return re.sub(r'-+', '-', s)
@@ -57,6 +68,32 @@ def _make_slug(title: str) -> str:
 
 def _momira_url(pkg_id: str, title: str) -> str:
     return f"https://momira.travel/en/idea/{pkg_id}/{_make_slug(title)}"
+
+
+def _momira_bare_url(pkg_id: str) -> str:
+    """The slug-free form of the idea URL. The slug built from the title is always a GUESS -
+    momira.travel is the authority on its own canonical slug - so this is offered to the
+    operator as the fallback to try when the guessed one lands on the homepage."""
+    return f"https://momira.travel/en/idea/{pkg_id}/"
+
+
+def _rollover_target_url(pkg_id: str, title: str, info: dict | None = None) -> str:
+    """The URL the rollover opens, best source first.
+
+    1. The package's OWN url from the API response, but ONLY when it is already a
+       momira.travel address. The browser extension's manifest matches momira.travel and
+       nothing else, so handing it an online.travelcompositor.com URL (which is what the
+       `ideaUrl` field often carries) would open a page the extension never runs on - a
+       silent downgrade, worse than a guessed slug.
+    2. The title-derived slug URL.
+    3. The bare-ID URL when there is no title to build a slug from.
+    """
+    api_url = _extract_idea_url(info or {})
+    if api_url and re.match(r'^https://(www\.)?momira\.travel/', api_url):
+        return api_url
+    if title:
+        return _momira_url(pkg_id, title)
+    return _momira_bare_url(pkg_id)
 
 
 def _extract_title(info: dict) -> str:
@@ -310,13 +347,13 @@ def _extract_pax(info: dict) -> str | None:
 
 @st.dialog("🔁 Package Rollover")
 def _rollover_dialog(pkg_id: str, title: str, current_price, pax: str | None,
-                     current_departure=None):
+                     current_departure=None, info=None):
     _render_rollover_body(pkg_id, title, current_price, pax, key_prefix="pkr",
-                          current_departure=current_departure)
+                          current_departure=current_departure, info=info)
 
 
 def _render_rollover_body(pkg_id, title, current_price, pax, key_prefix,
-                          current_departure=None):
+                          current_departure=None, info=None):
     """Reliable rollover UI, shared by the dedicated tool and the staleness list.
 
     The booking itself has to happen in the operator's OWN browser: momira.travel
@@ -338,7 +375,7 @@ def _render_rollover_body(pkg_id, title, current_price, pax, key_prefix,
     st.markdown(f"**{title or pkg_id}**")
     st.caption(f"Package ID: {pkg_id}")
 
-    package_url = _momira_url(pkg_id, title) if title else f"https://momira.travel/en/idea/{pkg_id}/"
+    package_url = _rollover_target_url(pkg_id, title, info)
 
     col1, col2 = st.columns(2)
     with col1:
@@ -366,14 +403,21 @@ def _render_rollover_body(pkg_id, title, current_price, pax, key_prefix,
     st.write("")
     st.markdown(f"New departure date: **`{chosen_str}`**")
 
-    # Opens the TC idea page in a new tab with the chosen date in the URL hash
-    # (#tcr=DD.MM.YYYY). The Chrome extension on momira.travel reads that hash and
-    # automates: click Book, set date, click Search. The hash — not localStorage —
-    # is what carries the date across the origin boundary (see this function's docstring).
+    # Opens the TC idea page in a new tab with the chosen date in the URL
+    # (?tcr=DD.MM.YYYY). The Chrome extension on momira.travel reads it and automates:
+    # click Book, set date, click Search. The URL — not localStorage — is what carries the
+    # date across the origin boundary (see this function's docstring).
+    #
+    # Query parameter, not the hash it used to be: an unrecognised #fragment can send a
+    # client-side router to its home route, which is indistinguishable from the slug-not-
+    # found redirect this same screen is fighting. A query parameter is ignored by routers
+    # that don't know it. The extension still accepts the #tcr= form so an older build
+    # keeps working.
     from urllib.parse import quote as _quote
     import streamlit.components.v1 as components
 
-    _rollover_url = package_url + "#tcr=" + _quote(chosen_str)
+    _sep = "&" if "?" in package_url else "?"
+    _rollover_url = package_url + _sep + "tcr=" + _quote(chosen_str)
 
     _bid = f"{key_prefix}_rollover_btn"
     components.html(
@@ -396,12 +440,31 @@ def _render_rollover_body(pkg_id, title, current_price, pax, key_prefix,
                "the summary, then stops so you can accept. 📱 Phone or no extension: the page opens "
                "and you do the steps below by hand.")
 
-    with st.expander("Manual fallback"):
+    with st.expander("Manual fallback / this opened the wrong page"):
+        # CONFIRMED REAL SYMPTOM (operator, 2026-11-23): "it falls back to the main page of
+        # Travel Compositor instead of opening the URL and opening the package". When the
+        # guessed slug is wrong momira.travel silently redirects to its homepage, and until
+        # now the operator had no way to SEE which URL was attempted. Showing it - plus the
+        # slug-free form to try instead - turns a mystery into a one-click diagnosis.
+        st.caption("The URL this button opens (the part after the ID is derived from the "
+                   "package title, so it is a best guess):")
+        st.code(package_url, language=None)
         st.link_button(
             "Open package in Travel Compositor",
             _rollover_url,
             use_container_width=True,
         )
+        _bare = _momira_bare_url(pkg_id)
+        if _bare.rstrip("/") != package_url.rstrip("/"):
+            st.caption("Landed on the momira.travel homepage instead of the package? "
+                       "The title-derived slug is wrong for this package — try the "
+                       "slug-free URL:")
+            st.code(_bare, language=None)
+            st.link_button(
+                "Open without the title slug",
+                _bare + "?tcr=" + _quote(chosen_str),
+                use_container_width=True,
+            )
         st.markdown(
             f"On the TC page:\n\n"
             f"1. Click **Book directly without changes**\n"
@@ -440,6 +503,7 @@ def render_package_rollover_tool():
                 current_price=current_price,
                 pax=pax,
                 current_departure=current_departure,
+                info=info,
             )
         except Exception as e:
             st.error(ai_extractor.friendly_error_message(e))
@@ -459,6 +523,7 @@ def render_package_rollover_tool():
                 current_price=current_price,
                 pax=pax,
                 current_departure=current_departure,
+                info=info,
             )
         except Exception as e:
             st.error(ai_extractor.friendly_error_message(e))

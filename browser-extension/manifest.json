@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Momira TC Rollover",
-  "version": "5.3.1",
-  "description": "Automates package rollover on momira.travel to the booking summary: clicks Book directly without changes, fills departure date (auto-scans up to +30 days if the exact date is unavailable), starts search, then stops and highlights 'Save and overwrite the existing package' for the human to accept. Never clicks 'Book the trip'.",
+  "version": "5.4.0",
+  "description": "Automates package rollover on momira.travel to the booking summary: clicks Book directly without changes, fills departure date (auto-scans up to +30 days if the exact date is unavailable), starts search, then stops and highlights 'Save and overwrite the existing package' for the human to accept. Reads the date from ?tcr= or #tcr=, and reports clearly when momira.travel redirected to its homepage instead of opening the package. Never clicks 'Book the trip'.",
   "content_scripts": [
     {
       "matches": ["https://momira.travel/*", "https://www.momira.travel/*"],
