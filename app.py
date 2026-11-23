@@ -868,11 +868,21 @@ st.markdown("<style>html { font-size: 106%; }</style>", unsafe_allow_html=True)
 # doesn't pass its own `format=` picks up DD/MM/YYYY automatically. Calls that
 # explicitly pass a different format (e.g. YYYY-MM-DD for DB fields) are left
 # alone so no caller gets a surprise behaviour change.
+#
+# ALSO (operator, 2026-11-23, second request): the calendar must not allow
+# picking anything before January 1 of the current year - operations like stop
+# sales, supplement validity, price refresh end-dates etc. only ever apply
+# forward. Hiding past years in the picker saves misclicks and prevents a
+# past-dated stop sale from being created by accident. Any call site that
+# explicitly passes its own min_value is left alone, so legitimately
+# historical pickers (if any) keep working.
 if not getattr(st.date_input, "_dmy_wrapped", False):
+    import datetime as _dt_default
     _orig_date_input = st.date_input
 
     def _dmy_date_input(*args, **kwargs):
         kwargs.setdefault("format", "DD/MM/YYYY")
+        kwargs.setdefault("min_value", _dt_default.date(_dt_default.date.today().year, 1, 1))
         return _orig_date_input(*args, **kwargs)
 
     _dmy_date_input._dmy_wrapped = True
