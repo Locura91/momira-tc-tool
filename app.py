@@ -862,6 +862,30 @@ if _APP_PASSWORD and not st.session_state.get("_authenticated"):
 # default 16px browser base up to ~17px.
 st.markdown("<style>html { font-size: 106%; }</style>", unsafe_allow_html=True)
 
+# CONFIRMED REAL REQUEST (operator, 2026-11-23): the Streamlit date-picker calendar
+# shows 4, 5, or 6 week-rows depending on the month. Clicking "next" rapidly caused
+# the arrow to jump up and down as the calendar body resized, leading to misclicks on
+# adjacent dates. Pin the calendar surface to a constant height so the nav arrows
+# never move between months. 6 rows + header is the worst-case layout (months like
+# May 2026 that start late and end late), so reserving that much space keeps every
+# month the same size.
+st.markdown("""
+<style>
+  /* Streamlit's BaseWeb date picker renders the month grid as [role='grid']
+     inside the popup. Pin the grid to the 6-row worst-case so switching months
+     doesn't change its height and the nav arrows stay anchored. */
+  div[data-baseweb="calendar"] [role="grid"] {
+    min-height: 240px;
+  }
+  /* The whole popup wrapper too - the header + grid + optional quick-select footer.
+     Reserve ~320px so the entire panel (and therefore the nav arrows above the
+     grid) stays at a fixed vertical position whichever month is on screen. */
+  div[data-baseweb="calendar"] {
+    min-height: 300px;
+  }
+</style>
+""", unsafe_allow_html=True)
+
 # CONFIRMED REAL PRODUCT-OWNER REQUEST (2026-09-17): "if the human reloads the page all
 # information is gone ... general issue" across every flow, not just one. Runs BEFORE any
 # flow-specific state is touched below, so a returning tab either gets its unfinished work back
