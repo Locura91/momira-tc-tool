@@ -541,7 +541,7 @@ def render_price_refresh_flow(client, preselected_kind=None):
                     # on every row now, read from the live record's own pricePerPax.
                     _basis = "per person" if route.get("price_per_pax", True) else "per vehicle"
                     _kind_label = " *(vehicle price)*" if c.get("write_kind") == "vehicle" \
-                        else " *(price supplement)*" if c.get("write_kind") == "supplement" else ""
+                        else " *(price supplement)*" if c.get("write_kind") == "supplement" and kind != price_refresh.KIND_TRANSFER else ""
                     _new_period_label = "  ·  *new period*" if c.get("is_new_period") else ""
                     if abs(c["new"] - c["old"]) < 0.005:
                         st.markdown(f"{c['min_pax']}–{c['max_pax']} pax{_period_label}: {c['old']} → "
@@ -594,10 +594,11 @@ def render_price_refresh_flow(client, preselected_kind=None):
             # modality - see supplement_calculation_examples' own docstring.
             _all_options = [o for o in (route.get("options") or []) if not o.get("fetch_failed")]
             _changed_codes = {c["code"] for c in p["changes"]}
-            _examples = price_refresh.supplement_calculation_examples(route, p["changes"])
+            _is_transfer = kind == price_refresh.KIND_TRANSFER
+            _examples = price_refresh.supplement_calculation_examples(route, p["changes"]) if not _is_transfer else []
             _base_option = None
             _base_price = None
-            if len(_all_options) >= 2:
+            if not _is_transfer and len(_all_options) >= 2:
                 _base_option = price_refresh._current_base_option(
                     _all_options, forced_bracket=route.get("base_bracket_override"))
                 _base_code_in_changes = next((c for c in p["changes"] if c["code"] == _base_option["code"]), None)
@@ -610,31 +611,48 @@ def render_price_refresh_flow(client, preselected_kind=None):
                 if _code in _changed_codes:
                     _c = next(c for c in p["changes"] if c["code"] == _code)
                     _full = _c["new"]
-                    if _base_option and _code == _base_option["code"]:
-                        _supp = "— *(base)*"
-                    elif _base_price is not None:
-                        _supp = f"+{round(_full - _base_price, 2)}"
-                    else:
-                        _supp = "—"
                     _status = "🔴 changed" if _full != _c["old"] else "✅"
-                    _rows.append(f"| {_pax_label} | **{_full}** {_ccy} | "
-                                 f"{_base_price or _full} | {_supp} | {_name} | {_status} |")
+                    if _is_transfer:
+                        _tc = round(_c.get("child_new", 0.0) or 0.0, 2)
+                        _ti = round(_c.get("infant_new", 0.0) or 0.0, 2)
+                        _rows.append(f"| {_pax_label} | **{_full}** {_ccy} | {_tc} | {_ti} | {_name} | {_status} |")
+                    else:
+                        if _base_option and _code == _base_option["code"]:
+                            _supp = "— *(base)*"
+                        elif _base_price is not None:
+                            _supp = f"+{round(_full - _base_price, 2)}"
+                        else:
+                            _supp = "—"
+                        _rows.append(f"| {_pax_label} | **{_full}** {_ccy} | "
+                                     f"{_base_price or _full} | {_supp} | {_name} | {_status} |")
                 else:
                     _full = round(float(o.get("unit_price", 0)), 2)
-                    if _base_option and _code == _base_option["code"]:
-                        _supp = "— *(base)*"
-                    elif _base_price is not None:
-                        _supp = f"+{round(_full - _base_price, 2)}"
+                    if _is_transfer:
+                        _uc = round(o.get("unit_price_child", 0.0), 2)
+                        _ui = round(o.get("unit_price_infant", 0.0), 2)
+                        _rows.append(f"| {_pax_label} | {_full} {_ccy} | {_uc} | {_ui} | {_name} | ✅ correct |")
                     else:
-                        _supp = "—"
-                    _rows.append(f"| {_pax_label} | {_full} {_ccy} | "
-                                 f"{_base_price or _full} | {_supp} | {_name} | ✅ correct |")
+                        if _base_option and _code == _base_option["code"]:
+                            _supp = "— *(base)*"
+                        elif _base_price is not None:
+                            _supp = f"+{round(_full - _base_price, 2)}"
+                        else:
+                            _supp = "—"
+                        _rows.append(f"| {_pax_label} | {_full} {_ccy} | "
+                                     f"{_base_price or _full} | {_supp} | {_name} | ✅ correct |")
             if _rows:
-                st.markdown(
-                    f"\n| Bracket | Full price/pax | Base price | Supplement | Modality | Status |\n"
-                    f"|---------|---------------|------------|------------|----------|--------|\n"
-                    + "\n".join(_rows)
-                )
+                if _is_transfer:
+                    st.markdown(
+                        f"\n| Bracket | Adult | Child | Infant | Modality | Status |\n"
+                        f"|---------|-------|-------|--------|----------|--------|\n"
+                        + "\n".join(_rows)
+                    )
+                else:
+                    st.markdown(
+                        f"\n| Bracket | Full price/pax | Base price | Supplement | Modality | Status |\n"
+                        f"|---------|---------------|------------|------------|----------|--------|\n"
+                        + "\n".join(_rows)
+                    )
             # CONFIRMED REAL GAP (product owner): no way to redirect the AI when it read the
             # wrong row (e.g. picked Marsa Allam's price for a bundled Port Ghalib/Marsa Allam
             # route) short of fixing the number by hand above. This re-reads ONLY this one
@@ -672,9 +690,10 @@ def render_price_refresh_flow(client, preselected_kind=None):
             route = p["route"]
             _ccy_u = route.get('currency') or ''
             _opts_u = [o for o in (route.get("options") or []) if not o.get("fetch_failed")]
+            _is_transfer_u = kind == price_refresh.KIND_TRANSFER
             _base_u = None
             _base_price_u = None
-            if len(_opts_u) >= 2:
+            if not _is_transfer_u and len(_opts_u) >= 2:
                 _base_u = price_refresh._current_base_option(
                     _opts_u, forced_bracket=route.get("base_bracket_override"))
                 _base_price_u = round(float(_base_u.get("unit_price", 0)), 2)
@@ -683,14 +702,19 @@ def render_price_refresh_flow(client, preselected_kind=None):
                 _full_u = round(float(o.get("unit_price", 0)), 2)
                 _name_u = o.get("name") or o.get("code") or "?"
                 _pax_u = f"{o.get('min_pax', '?')}–{o.get('max_pax', '?')} pax"
-                if _base_u and o.get("code") == _base_u.get("code"):
-                    _supp_u = "— *(base)*"
-                elif _base_price_u is not None:
-                    _supp_u = f"+{round(_full_u - _base_price_u, 2)}"
+                if _is_transfer_u:
+                    _uc_u = round(o.get("unit_price_child", 0.0), 2)
+                    _ui_u = round(o.get("unit_price_infant", 0.0), 2)
+                    _rows_u.append(f"| {_pax_u} | {_full_u} {_ccy_u} | {_uc_u} | {_ui_u} | {_name_u} |")
                 else:
-                    _supp_u = "—"
-                _rows_u.append(f"| {_pax_u} | {_full_u} {_ccy_u} | "
-                               f"{_base_price_u or _full_u} | {_supp_u} | {_name_u} |")
+                    if _base_u and o.get("code") == _base_u.get("code"):
+                        _supp_u = "— *(base)*"
+                    elif _base_price_u is not None:
+                        _supp_u = f"+{round(_full_u - _base_price_u, 2)}"
+                    else:
+                        _supp_u = "—"
+                    _rows_u.append(f"| {_pax_u} | {_full_u} {_ccy_u} | "
+                                   f"{_base_price_u or _full_u} | {_supp_u} | {_name_u} |")
             _child_u = round(route.get("base_child", 0.0), 2)
             _infant_u = round(route.get("base_infant", 0.0), 2)
             _child_line = ""
@@ -703,11 +727,18 @@ def render_price_refresh_flow(client, preselected_kind=None):
                 _child_line = f" · {' · '.join(_parts)} {_ccy_u}"
             st.markdown(f":green[**{route.get('name')}**]{_id_suffix(route)}{_child_line}")
             if _rows_u:
-                st.markdown(
-                    f"\n| Bracket | Full price/pax | Base price | Supplement | Modality |\n"
-                    f"|---------|---------------|------------|------------|----------|\n"
-                    + "\n".join(_rows_u)
-                )
+                if _is_transfer_u:
+                    st.markdown(
+                        f"\n| Bracket | Adult | Child | Infant | Modality |\n"
+                        f"|---------|-------|-------|--------|----------|\n"
+                        + "\n".join(_rows_u)
+                    )
+                else:
+                    st.markdown(
+                        f"\n| Bracket | Full price/pax | Base price | Supplement | Modality |\n"
+                        f"|---------|---------------|------------|------------|----------|\n"
+                        + "\n".join(_rows_u)
+                    )
     if absent:
         with st.expander(f"ℹ️ {len(absent)} TC route(s) not in this document — ignored unless you match by hand"):
             st.caption("These routes exist in TC but weren't found in the uploaded document. "
