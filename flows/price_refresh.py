@@ -34,6 +34,71 @@ _TRANSPORT_TYPE_OPTIONS = [
 _TRANSPORT_TYPE_LABEL_TO_KEY = {label: key for key, label in _TRANSPORT_TYPE_OPTIONS}
 
 
+def _transfer_occupancy_rows(route, changes_by_code):
+    """One display row per occupancy (1, 2, 3 … maxOccupancy) for a Transfer.
+
+    CONFIRMED REAL REQUEST (operator, 2026-11-23): "the order shall be always 1 packs,
+    2 packs, and then 1 to 6 packs if you do it like this way. But it will be better […]
+    3 packs, 4 packs, 5 packs, 6 packs, 7 packs, and 9 packs, 8 packs also to add it in
+    one line."
+
+    The old table sorted the raw brackets by (min_pax, max_pax), which interleaved the
+    catch-all default range with the single-occupancy overrides and produced the order the
+    operator photographed: 1–1 pax, then 1–6 pax, then 2–2 pax. Unreadable, and it hid the
+    fact that occupancies 3–6 are priced at all.
+
+    Listing one row per occupancy also makes the table match what Apply actually writes:
+    _rebuild_transfer_prices runs with force_explicit_all once any child price is present,
+    so every occupancy ends up with its own pricesByOccupancy entry in TC. An occupancy with
+    no override of its own inherits the default rate, and the row says so in its Modality
+    cell rather than leaving the operator to infer it.
+    """
+    opts = [o for o in (route.get("options") or []) if not o.get("fetch_failed")]
+    if not opts:
+        return []
+    raw = route.get("raw") or {}
+    try:
+        max_occ = int(raw.get("maxOccupancy") or 0)
+    except (TypeError, ValueError):
+        max_occ = 0
+    if max_occ <= 0:
+        max_occ = max((int(o.get("max_pax") or 0) for o in opts), default=1)
+    max_occ = max(1, min(max_occ, 9))  # TC tops out at 9 passengers per booking
+
+    explicit = {int(o["min_pax"]): o for o in opts
+                if o.get("min_pax") == o.get("max_pax") and o.get("min_pax")}
+    default = next((o for o in opts if o.get("code") == price_refresh.DEFAULT_BRACKET_CODE), None)
+    if default is None:
+        default = max(opts, key=lambda o: (int(o.get("max_pax") or 0) - int(o.get("min_pax") or 0)))
+
+    rows = []
+    for occ in range(1, max_occ + 1):
+        bracket = explicit.get(occ) or default
+        if bracket is None:
+            continue
+        code = bracket.get("code")
+        change = changes_by_code.get(code)
+        adult = change["new"] if change else round(float(bracket.get("unit_price", 0)), 2)
+        if change and change.get("child_new") is not None:
+            child = round(float(change["child_new"]), 2)
+        else:
+            child = round(float(bracket.get("unit_price_child", 0.0)), 2)
+        if change and change.get("infant_new") is not None:
+            infant = round(float(change["infant_new"]), 2)
+        else:
+            infant = round(float(bracket.get("unit_price_infant", 0.0)), 2)
+        inherited = occ not in explicit
+        rows.append({
+            "occ": occ,
+            "adult": adult,
+            "child": child,
+            "infant": infant,
+            "modality": (bracket.get("name") or code or "?") + (" *(default)*" if inherited else ""),
+            "changed": bool(change) and abs(adult - float(change["old"])) >= 0.005,
+        })
+    return rows
+
+
 def render_price_refresh_flow(client, preselected_kind=None):
     """Update the prices of transports that already exist, from a new rate sheet.
 
@@ -527,6 +592,13 @@ def render_price_refresh_flow(client, preselected_kind=None):
                             key=f"pr_child_{p['index']}_{c['code']}_{c.get('start_date') or ''}"
                                 f"_{c.get('end_date') or ''}_{p.get('widget_token', 'g0')}",
                             label_visibility="collapsed")
+                    if c.get("infant_new") is not None:
+                        c["infant_new"] = st.number_input(
+                            f"New infant price ({c['min_pax']}-{c['max_pax']} pax){_period_label}",
+                            min_value=0.0, step=1.0, value=float(c["infant_new"]),
+                            key=f"pr_infant_{p['index']}_{c['code']}_{c.get('start_date') or ''}"
+                                f"_{c.get('end_date') or ''}_{p.get('widget_token', 'g0')}",
+                            label_visibility="collapsed")
                 with pcol1:
                     # CONFIRMED REAL REQUEST (product owner): red when the price to apply
                     # differs from what's already live, green when (after any hand-edit above)
@@ -541,7 +613,7 @@ def render_price_refresh_flow(client, preselected_kind=None):
                     # on every row now, read from the live record's own pricePerPax.
                     _basis = "per person" if route.get("price_per_pax", True) else "per vehicle"
                     _kind_label = " *(vehicle price)*" if c.get("write_kind") == "vehicle" \
-                        else " *(price supplement)*" if c.get("write_kind") == "supplement" else ""
+                        else " *(price supplement)*" if c.get("write_kind") == "supplement" and kind != price_refresh.KIND_TRANSFER else ""
                     _new_period_label = "  ·  *new period*" if c.get("is_new_period") else ""
                     if abs(c["new"] - c["old"]) < 0.005:
                         st.markdown(f"{c['min_pax']}–{c['max_pax']} pax{_period_label}: {c['old']} → "
@@ -565,8 +637,13 @@ def render_price_refresh_flow(client, preselected_kind=None):
                             st.markdown(f"&nbsp;&nbsp;&nbsp;↳ child: :green[**{_co}**] {_ccy} — *unchanged*")
                         else:
                             st.markdown(f"&nbsp;&nbsp;&nbsp;↳ child: {_co} → :red[**{_cn}**] {_ccy}{_csrc_label}")
-                        if c.get("infant_old") is not None and c["infant_old"] > 0:
-                            st.caption(f"&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;infant: {c['infant_old']} {_ccy} (scales with adult)")
+                        if c.get("infant_new") is not None or (c.get("infant_old") is not None and c["infant_old"] > 0):
+                            _io = c.get("infant_old", 0.0)
+                            _in = c.get("infant_new", _io)
+                            if abs(_in - _io) < 0.005:
+                                st.markdown(f"&nbsp;&nbsp;&nbsp;↳ infant: :green[**{_io}**] {_ccy} — *unchanged*")
+                            else:
+                                st.markdown(f"&nbsp;&nbsp;&nbsp;↳ infant: {_io} → :red[**{_in}**] {_ccy}")
             bits = []
             if finding.get("matched_row"):
                 bits.append(f'from the row *“{finding["matched_row"]}”*')
@@ -594,47 +671,69 @@ def render_price_refresh_flow(client, preselected_kind=None):
             # modality - see supplement_calculation_examples' own docstring.
             _all_options = [o for o in (route.get("options") or []) if not o.get("fetch_failed")]
             _changed_codes = {c["code"] for c in p["changes"]}
-            _examples = price_refresh.supplement_calculation_examples(route, p["changes"])
+            _is_transfer = kind == price_refresh.KIND_TRANSFER
+            _examples = price_refresh.supplement_calculation_examples(route, p["changes"]) if not _is_transfer else []
             _base_option = None
             _base_price = None
-            if len(_all_options) >= 2:
+            if not _is_transfer and len(_all_options) >= 2:
                 _base_option = price_refresh._current_base_option(
                     _all_options, forced_bracket=route.get("base_bracket_override"))
                 _base_code_in_changes = next((c for c in p["changes"] if c["code"] == _base_option["code"]), None)
                 _base_price = round(float(_base_code_in_changes["new"]) if _base_code_in_changes else _base_option["unit_price"], 2)
             _rows = []
-            for o in sorted(_all_options, key=lambda x: (x.get("min_pax", 0), x.get("max_pax", 0))):
+            if _is_transfer:
+                _by_code = {c["code"]: c for c in p["changes"]}
+                for _r in _transfer_occupancy_rows(route, _by_code):
+                    _adult = f"**{_r['adult']}**" if _r["changed"] else f"{_r['adult']}"
+                    _st = "🔴 changed" if _r["changed"] else "✅ correct"
+                    _rows.append(f"| {_r['occ']} pax | {_adult} {_ccy} | {_r['child']} | "
+                                 f"{_r['infant']} | {_r['modality']} | {_st} |")
+            for o in ([] if _is_transfer else
+                      sorted(_all_options, key=lambda x: (x.get("min_pax", 0), x.get("max_pax", 0)))):
                 _code = o.get("code") or o.get("name") or "?"
                 _name = o.get("name") or _code
                 _pax_label = f"{o.get('min_pax', '?')}–{o.get('max_pax', '?')} pax"
                 if _code in _changed_codes:
                     _c = next(c for c in p["changes"] if c["code"] == _code)
                     _full = _c["new"]
-                    if _base_option and _code == _base_option["code"]:
-                        _supp = "— *(base)*"
-                    elif _base_price is not None:
-                        _supp = f"+{round(_full - _base_price, 2)}"
-                    else:
-                        _supp = "—"
                     _status = "🔴 changed" if _full != _c["old"] else "✅"
-                    _rows.append(f"| {_pax_label} | **{_full}** {_ccy} | "
-                                 f"{_base_price or _full} | {_supp} | {_name} | {_status} |")
+                    if False:
+                        pass
+                    else:
+                        if _base_option and _code == _base_option["code"]:
+                            _supp = "— *(base)*"
+                        elif _base_price is not None:
+                            _supp = f"+{round(_full - _base_price, 2)}"
+                        else:
+                            _supp = "—"
+                        _rows.append(f"| {_pax_label} | **{_full}** {_ccy} | "
+                                     f"{_base_price or _full} | {_supp} | {_name} | {_status} |")
                 else:
                     _full = round(float(o.get("unit_price", 0)), 2)
-                    if _base_option and _code == _base_option["code"]:
-                        _supp = "— *(base)*"
-                    elif _base_price is not None:
-                        _supp = f"+{round(_full - _base_price, 2)}"
+                    if False:
+                        pass
                     else:
-                        _supp = "—"
-                    _rows.append(f"| {_pax_label} | {_full} {_ccy} | "
-                                 f"{_base_price or _full} | {_supp} | {_name} | ✅ correct |")
+                        if _base_option and _code == _base_option["code"]:
+                            _supp = "— *(base)*"
+                        elif _base_price is not None:
+                            _supp = f"+{round(_full - _base_price, 2)}"
+                        else:
+                            _supp = "—"
+                        _rows.append(f"| {_pax_label} | {_full} {_ccy} | "
+                                     f"{_base_price or _full} | {_supp} | {_name} | ✅ correct |")
             if _rows:
-                st.markdown(
-                    f"\n| Bracket | Full price/pax | Base price | Supplement | Modality | Status |\n"
-                    f"|---------|---------------|------------|------------|----------|--------|\n"
-                    + "\n".join(_rows)
-                )
+                if _is_transfer:
+                    st.markdown(
+                        f"\n| Occupancy | Adult | Child | Infant | Modality | Status |\n"
+                        f"|-----------|-------|-------|--------|----------|--------|\n"
+                        + "\n".join(_rows)
+                    )
+                else:
+                    st.markdown(
+                        f"\n| Bracket | Full price/pax | Base price | Supplement | Modality | Status |\n"
+                        f"|---------|---------------|------------|------------|----------|--------|\n"
+                        + "\n".join(_rows)
+                    )
             # CONFIRMED REAL GAP (product owner): no way to redirect the AI when it read the
             # wrong row (e.g. picked Marsa Allam's price for a bundled Port Ghalib/Marsa Allam
             # route) short of fixing the number by hand above. This re-reads ONLY this one
@@ -672,25 +771,34 @@ def render_price_refresh_flow(client, preselected_kind=None):
             route = p["route"]
             _ccy_u = route.get('currency') or ''
             _opts_u = [o for o in (route.get("options") or []) if not o.get("fetch_failed")]
+            _is_transfer_u = kind == price_refresh.KIND_TRANSFER
             _base_u = None
             _base_price_u = None
-            if len(_opts_u) >= 2:
+            if not _is_transfer_u and len(_opts_u) >= 2:
                 _base_u = price_refresh._current_base_option(
                     _opts_u, forced_bracket=route.get("base_bracket_override"))
                 _base_price_u = round(float(_base_u.get("unit_price", 0)), 2)
             _rows_u = []
-            for o in sorted(_opts_u, key=lambda x: (x.get("min_pax", 0), x.get("max_pax", 0))):
+            if _is_transfer_u:
+                for _r in _transfer_occupancy_rows(route, {}):
+                    _rows_u.append(f"| {_r['occ']} pax | {_r['adult']} {_ccy_u} | "
+                                   f"{_r['child']} | {_r['infant']} | {_r['modality']} |")
+            for o in ([] if _is_transfer_u else
+                      sorted(_opts_u, key=lambda x: (x.get("min_pax", 0), x.get("max_pax", 0)))):
                 _full_u = round(float(o.get("unit_price", 0)), 2)
                 _name_u = o.get("name") or o.get("code") or "?"
                 _pax_u = f"{o.get('min_pax', '?')}–{o.get('max_pax', '?')} pax"
-                if _base_u and o.get("code") == _base_u.get("code"):
-                    _supp_u = "— *(base)*"
-                elif _base_price_u is not None:
-                    _supp_u = f"+{round(_full_u - _base_price_u, 2)}"
+                if False:
+                    pass
                 else:
-                    _supp_u = "—"
-                _rows_u.append(f"| {_pax_u} | {_full_u} {_ccy_u} | "
-                               f"{_base_price_u or _full_u} | {_supp_u} | {_name_u} |")
+                    if _base_u and o.get("code") == _base_u.get("code"):
+                        _supp_u = "— *(base)*"
+                    elif _base_price_u is not None:
+                        _supp_u = f"+{round(_full_u - _base_price_u, 2)}"
+                    else:
+                        _supp_u = "—"
+                    _rows_u.append(f"| {_pax_u} | {_full_u} {_ccy_u} | "
+                                   f"{_base_price_u or _full_u} | {_supp_u} | {_name_u} |")
             _child_u = round(route.get("base_child", 0.0), 2)
             _infant_u = round(route.get("base_infant", 0.0), 2)
             _child_line = ""
@@ -703,11 +811,18 @@ def render_price_refresh_flow(client, preselected_kind=None):
                 _child_line = f" · {' · '.join(_parts)} {_ccy_u}"
             st.markdown(f":green[**{route.get('name')}**]{_id_suffix(route)}{_child_line}")
             if _rows_u:
-                st.markdown(
-                    f"\n| Bracket | Full price/pax | Base price | Supplement | Modality |\n"
-                    f"|---------|---------------|------------|------------|----------|\n"
-                    + "\n".join(_rows_u)
-                )
+                if _is_transfer_u:
+                    st.markdown(
+                        f"\n| Occupancy | Adult | Child | Infant | Modality |\n"
+                        f"|-----------|-------|-------|--------|----------|\n"
+                        + "\n".join(_rows_u)
+                    )
+                else:
+                    st.markdown(
+                        f"\n| Bracket | Full price/pax | Base price | Supplement | Modality |\n"
+                        f"|---------|---------------|------------|------------|----------|\n"
+                        + "\n".join(_rows_u)
+                    )
     if absent:
         with st.expander(f"ℹ️ {len(absent)} TC route(s) not in this document — ignored unless you match by hand"):
             st.caption("These routes exist in TC but weren't found in the uploaded document. "

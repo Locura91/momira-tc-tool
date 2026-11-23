@@ -1656,7 +1656,7 @@ def build_proposals(routes: List[Dict[str, Any]],
             changes, unchanged, missing = [], 0, 0
         elif route.get("kind") == KIND_TRANSFER:
             # Transfer has no vehicle/supplement modality concept at all (see
-            # _rebuild_transfer_prices) - unchanged from before this overhaul.
+            # _rebuild_transfer_prices) — direct override prices per occupancy.
             changes, unchanged, missing = [], 0, 0
             for option in usable_options:
                 if only_option_code is not None and option.get("code") != only_option_code:
@@ -1667,15 +1667,49 @@ def build_proposals(routes: List[Dict[str, Any]],
                                               finding.get("minimum_pax", 1),
                                               price_per_pax=per_pax,
                                               allow_overlap=allow_overlap or scope is not None)
-                if new_price is None:
+                _periods = bracket_periods_for(finding, option["min_pax"], option["max_pax"],
+                                               finding.get("minimum_pax", 1),
+                                               price_per_pax=per_pax,
+                                               allow_overlap=allow_overlap or scope is not None)
+                _doc_child = None
+                _doc_infant = None
+                if _periods:
+                    _doc_child = _periods[0].get("child_price")
+                    _doc_infant = _periods[0].get("infant_price")
+                if new_price is None and _doc_child is None:
                     missing += 1
                     continue
-                if abs(new_price - option["unit_price"]) < 0.005:
+                if new_price is None:
+                    new_price = option["unit_price"]
+                _child_old = round(option.get("unit_price_child", 0.0), 2)
+                _infant_old = round(option.get("unit_price_infant", 0.0), 2)
+                if _doc_child is not None:
+                    _child_new = round_up_currency(_doc_child)
+                    _child_source = "document"
+                elif per_pax and option["unit_price"] > 0 and _child_old > 0:
+                    _child_new = round_up_currency(_child_old * new_price / option["unit_price"])
+                    _child_source = "scaled"
+                else:
+                    _child_new = round_up_currency(new_price)
+                    _child_source = "default (same as adult)"
+                if _doc_infant is not None:
+                    _infant_new = round_up_currency(_doc_infant)
+                elif per_pax and option["unit_price"] > 0 and _infant_old > 0:
+                    _infant_new = round_up_currency(_infant_old * new_price / option["unit_price"])
+                else:
+                    _infant_new = _infant_old
+                adult_changed = abs(new_price - option["unit_price"]) >= 0.005
+                child_changed = abs(_child_new - _child_old) >= 0.005
+                infant_changed = abs(_infant_new - _infant_old) >= 0.005
+                if not adult_changed and not child_changed and not infant_changed:
                     unchanged += 1
                     continue
                 changes.append({"code": option["code"], "min_pax": option["min_pax"],
                                 "max_pax": option["max_pax"], "old": option["unit_price"],
-                                "new": new_price, "name": option.get("name", "")})
+                                "new": new_price, "name": option.get("name", ""),
+                                "child_old": _child_old, "child_new": _child_new,
+                                "child_source": _child_source,
+                                "infant_old": _infant_old, "infant_new": _infant_new})
             if changes:
                 status = "changed"
             elif not finding.get("found"):
@@ -2250,7 +2284,15 @@ def rebuild_prices(route: Dict[str, Any], changes: List[Dict[str, Any]]) -> Dict
     Transfer, which has no such concept and always PUTs the whole record as before)}."""
     if route.get("kind") == KIND_TRANSFER:
         new_unit_prices = {c["code"]: c["new"] for c in changes}
-        return _rebuild_transfer_prices(route, new_unit_prices)
+        new_child_prices = {c["code"]: c["child_new"] for c in changes
+                            if c.get("child_new") is not None}
+        new_infant_prices = {c["code"]: c["infant_new"] for c in changes
+                             if c.get("infant_new") is not None}
+        has_any_child = any(c.get("child_new", 0) > 0.005 for c in changes)
+        return _rebuild_transfer_prices(route, new_unit_prices,
+                                        new_child_prices=new_child_prices or None,
+                                        new_infant_prices=new_infant_prices or None,
+                                        force_explicit_all=has_any_child)
     # CONFIRMED REAL BUG (audit, 2026-08-24): see build_proposals' "blocked_unreadable" comment.
     # Refusing here as well as at the proposal stage is deliberate belt-and-braces: this function
     # is what actually computes the shared base price, so it is the place where repricing every
