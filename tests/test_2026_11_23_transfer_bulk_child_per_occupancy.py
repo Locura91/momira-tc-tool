@@ -91,6 +91,34 @@ def test_transfer_proposal_scales_child_proportionally():
     assert c["child_source"] == "scaled"
 
 
+def test_transfer_child_defaults_to_adult_when_no_doc_no_existing():
+    """When document has no child price and TC has no existing child price,
+    child defaults to the adult price (not 0)."""
+    options = [
+        {"code": "default", "min_pax": 1, "max_pax": 6, "unit_price": 3350.0,
+         "unit_price_child": 0.0, "unit_price_infant": 0.0,
+         "name": "default rate", "raw": None},
+    ]
+    route = _route(options)
+    finding = {
+        "found": True,
+        "brackets": [
+            {"min_pax": 1, "max_pax": 6, "price": 3500.0, "child_price": None, "infant_price": None},
+        ],
+        "confidence": "high",
+        "matched_row": "test",
+        "minimum_pax": 1,
+        "currency": "THB",
+    }
+    proposals = build_proposals([route], {0: finding})
+    p = proposals[0]
+    assert p["status"] == "changed"
+    c = p["changes"][0]
+    assert c["new"] == 3500.0
+    assert c["child_new"] == 3500.0, "Child must default to adult price when no doc/existing child"
+    assert c["child_source"] == "default (same as adult)"
+
+
 def test_rebuild_transfer_writes_child_per_occupancy():
     options = [
         {"code": "default", "min_pax": 1, "max_pax": 6, "unit_price": 3350.0,
@@ -116,10 +144,11 @@ def test_rebuild_transfer_writes_child_per_occupancy():
     payload = result["transport"]
     assert payload is not None
     occ_entries = payload.get("pricesByOccupancy", [])
-    occ1 = next((e for e in occ_entries if e["occupancy"] == 1), None)
-    assert occ1 is not None
-    assert occ1["basePrice"]["amount"] == 5450.0
+    occ1 = next((e for e in occ_entries if e.get("occupancy") == 1
+                 and e.get("basePrice", {}).get("amount") == 5450.0), None)
+    assert occ1 is not None, f"Expected occ1 with adult 5450, got: {occ_entries}"
     assert occ1["childPrice"]["amount"] == 2500.0
-    occ2 = next((e for e in occ_entries if e["occupancy"] == 2), None)
+    occ2 = next((e for e in occ_entries if e.get("occupancy") == 2), None)
     assert occ2 is not None
+    assert occ2["basePrice"]["amount"] == 3150.0
     assert occ2["childPrice"]["amount"] == 2500.0
