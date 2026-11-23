@@ -109,39 +109,90 @@
     var d = parseDDMMYYYY(dateStr); d.setDate(d.getDate() + n); return formatDDMMYYYY(d);
   }
 
-  // Check if a date is available (clickable) in an open jQuery UI datepicker calendar.
-  // Returns: "available" if the day cell is clickable, "disabled" if greyed out,
-  // "not_visible" if the month shown doesn't contain that day.
+  // ── calendar panel detection (TC uses multiple datepicker variants) ────────────────────────
+  var PANEL_SELECTORS = [
+    "#ui-datepicker-div", ".ui-datepicker", ".hasDatepicker + .ui-datepicker",
+    ".ui-datepicker-inline", "[class*='datepicker']", "[class*='calendar']",
+    ".p-datepicker", ".p-datepicker-panel"  // PrimeFaces
+  ];
+  function findCalendarPanel() {
+    for (var i = 0; i < PANEL_SELECTORS.length; i++) {
+      var el = document.querySelector(PANEL_SELECTORS[i]);
+      if (el && el.offsetParent !== null) return el;
+      if (el && el.style && el.style.display !== "none") return el;
+    }
+    return null;
+  }
+
+  function logCal(msg) { try { console.log("[TC Rollover Cal] " + msg); } catch (e) {} }
+
+  // Dump the calendar structure for debugging
+  function dumpCalendar() {
+    var panel = findCalendarPanel();
+    if (!panel) { logCal("No calendar panel found. Selectors tried: " + PANEL_SELECTORS.join(", ")); return; }
+    logCal("Panel found: " + panel.tagName + " class=" + (panel.className || ""));
+    var tds = panel.querySelectorAll("td");
+    var dump = [];
+    for (var i = 0; i < tds.length; i++) {
+      var td = tds[i];
+      var child = td.querySelector("a, span");
+      if (!child) continue;
+      var num = child.textContent.trim();
+      if (!num || isNaN(parseInt(num))) continue;
+      var tag = child.tagName;
+      var tdClass = td.className || "";
+      var childClass = child.className || "";
+      var isLink = tag === "A";
+      dump.push(num + "(" + tag + " cls=" + childClass.substring(0, 30) + " td=" + tdClass.substring(0, 30) + " link=" + isLink + ")");
+    }
+    logCal("Calendar days: " + dump.join(" | "));
+  }
+
+  // Check if a date is available (clickable) in an open datepicker calendar.
+  // In TC's jQuery UI datepicker: available dates have <a> tags, disabled dates have <span> tags
+  // or the td has class ui-state-disabled / ui-datepicker-unselectable.
   function checkDateInCalendar(dateStr) {
-    var panel = document.querySelector(".ui-datepicker, #ui-datepicker-div, .hasDatepicker + .ui-datepicker");
-    if (!panel || panel.offsetParent === null) return "no_calendar";
+    var panel = findCalendarPanel();
+    if (!panel) { logCal("checkDate: no panel"); return "no_calendar"; }
     var d = parseDDMMYYYY(dateStr);
     var day = d.getDate(), month = d.getMonth(), year = d.getFullYear();
-    // Find all day cells in the visible calendar
-    var cells = panel.querySelectorAll("td[data-handler='selectDay'], td a[data-date]");
-    // Try matching by data attributes first (PrimeFaces style)
+    logCal("checkDate: looking for day=" + day + " month=" + month + " year=" + year);
+
+    // Strategy 1: data attributes (jQuery UI standard)
+    var cells = panel.querySelectorAll("td[data-handler='selectDay']");
     for (var i = 0; i < cells.length; i++) {
-      var a = cells[i].tagName === "A" ? cells[i] : cells[i].querySelector("a");
+      var a = cells[i].querySelector("a");
       if (!a) continue;
       var cellDay = parseInt(a.getAttribute("data-date") || a.textContent);
-      var cellMonth = parseInt(a.getAttribute("data-month") || "");
-      var cellYear = parseInt(a.getAttribute("data-year") || "");
+      var cellMonth = parseInt(a.getAttribute("data-month"));
+      var cellYear = parseInt(a.getAttribute("data-year"));
       if (cellDay === day && (isNaN(cellMonth) || cellMonth === month) && (isNaN(cellYear) || cellYear === year)) {
-        var td = a.closest("td") || a.parentElement;
-        if (td && td.classList.contains("ui-state-disabled")) return "disabled";
-        if (td && td.classList.contains("ui-datepicker-unselectable")) return "disabled";
+        logCal("checkDate: found via data-handler, day=" + cellDay + " available");
         return "available";
       }
     }
-    // Fallback: scan td > a links by text content matching the day number
+
+    // Strategy 2: scan all td cells by day number
     var allTds = panel.querySelectorAll("td");
     for (var j = 0; j < allTds.length; j++) {
-      var link = allTds[j].querySelector("a, span");
-      if (link && parseInt(link.textContent) === day) {
-        if (allTds[j].classList.contains("ui-state-disabled") || allTds[j].classList.contains("ui-datepicker-unselectable") || link.tagName === "SPAN") return "disabled";
-        return "available";
-      }
+      var td = allTds[j];
+      var child = td.querySelector("a, span");
+      if (!child) continue;
+      var num = parseInt(child.textContent.trim());
+      if (num !== day) continue;
+      // Skip "other month" cells (previous/next month day numbers)
+      if (td.classList.contains("ui-datepicker-other-month")) continue;
+      if (td.classList.contains("other-month")) continue;
+
+      var isDisabled = td.classList.contains("ui-state-disabled") ||
+                       td.classList.contains("ui-datepicker-unselectable") ||
+                       td.classList.contains("disabled") ||
+                       child.tagName === "SPAN"; // jQuery UI: disabled days use <span>, enabled use <a>
+      logCal("checkDate: day " + num + " tag=" + child.tagName + " tdClass=" + (td.className || "") + " disabled=" + isDisabled);
+      return isDisabled ? "disabled" : "available";
     }
+
+    logCal("checkDate: day " + day + " not found in visible calendar");
     return "not_visible";
   }
 
@@ -150,27 +201,67 @@
     var d = parseDDMMYYYY(dateStr);
     var targetMonth = d.getMonth(), targetYear = d.getFullYear();
     var attempts = 0;
+    var maxClicks = 24; // don't loop forever
+
     function tryNav() {
-      var panel = document.querySelector(".ui-datepicker, #ui-datepicker-div");
-      if (!panel) { if (++attempts < 10) setTimeout(tryNav, 300); else cb(false); return; }
-      // Read current displayed month/year
-      var monthEl = panel.querySelector(".ui-datepicker-month");
-      var yearEl = panel.querySelector(".ui-datepicker-year");
-      if (!monthEl || !yearEl) { cb(false); return; }
+      var panel = findCalendarPanel();
+      if (!panel) {
+        if (++attempts < 15) { setTimeout(tryNav, 400); return; }
+        logCal("navigateTo: panel never appeared"); cb(false); return;
+      }
+
+      // Read current displayed month/year from calendar header
+      var monthEl = panel.querySelector(".ui-datepicker-month, .p-datepicker-month");
+      var yearEl = panel.querySelector(".ui-datepicker-year, .p-datepicker-year");
+      var headerText = "";
       var curMonth, curYear;
-      if (monthEl.tagName === "SELECT") curMonth = parseInt(monthEl.value);
-      else curMonth = new Date(Date.parse(monthEl.textContent + " 1")).getMonth();
-      if (yearEl.tagName === "SELECT") curYear = parseInt(yearEl.value);
-      else curYear = parseInt(yearEl.textContent);
-      if (isNaN(curMonth) || isNaN(curYear)) { cb(false); return; }
+
+      if (monthEl && yearEl) {
+        if (monthEl.tagName === "SELECT") curMonth = parseInt(monthEl.value);
+        else {
+          var monthText = monthEl.textContent.trim();
+          var testDate = Date.parse(monthText + " 1, 2000");
+          curMonth = isNaN(testDate) ? -1 : new Date(testDate).getMonth();
+        }
+        if (yearEl.tagName === "SELECT") curYear = parseInt(yearEl.value);
+        else curYear = parseInt(yearEl.textContent.trim());
+      } else {
+        // Try reading a combined header like "March 2027"
+        var titleEl = panel.querySelector(".ui-datepicker-title, .p-datepicker-title");
+        if (titleEl) {
+          headerText = titleEl.textContent.trim();
+          var parts = headerText.match(/([A-Za-zäöüÄÖÜéè]+)\s+(\d{4})/);
+          if (parts) {
+            var testDate2 = Date.parse(parts[1] + " 1, " + parts[2]);
+            curMonth = isNaN(testDate2) ? -1 : new Date(testDate2).getMonth();
+            curYear = parseInt(parts[2]);
+          }
+        }
+      }
+
+      logCal("navigateTo: target=" + targetMonth + "/" + targetYear + " current=" + curMonth + "/" + curYear + " header=" + headerText);
+
+      if (isNaN(curMonth) || isNaN(curYear) || curMonth < 0) {
+        if (++attempts < 15) { setTimeout(tryNav, 400); return; }
+        logCal("navigateTo: can't read month/year"); cb(false); return;
+      }
+
       if (curYear === targetYear && curMonth === targetMonth) { cb(true); return; }
-      // Click next/prev to get to the right month
+
+      if (--maxClicks <= 0) { logCal("navigateTo: max clicks reached"); cb(false); return; }
+
       var diff = (targetYear - curYear) * 12 + (targetMonth - curMonth);
       var arrow = diff > 0
-        ? panel.querySelector("a.ui-datepicker-next, .ui-datepicker-next a")
-        : panel.querySelector("a.ui-datepicker-prev, .ui-datepicker-prev a");
-      if (arrow) { arrow.click(); setTimeout(tryNav, 400); }
-      else { cb(false); }
+        ? panel.querySelector("a.ui-datepicker-next, .ui-datepicker-next a, .ui-datepicker-next, .p-datepicker-next")
+        : panel.querySelector("a.ui-datepicker-prev, .ui-datepicker-prev a, .ui-datepicker-prev, .p-datepicker-prev");
+      if (arrow) {
+        logCal("navigateTo: clicking " + (diff > 0 ? "next" : "prev"));
+        arrow.click();
+        setTimeout(tryNav, 500);
+      } else {
+        logCal("navigateTo: no arrow found");
+        cb(false);
+      }
     }
     tryNav();
   }
@@ -179,15 +270,21 @@
   function clickDateInCalendar(dateStr) {
     var d = parseDDMMYYYY(dateStr);
     var day = d.getDate();
-    var panel = document.querySelector(".ui-datepicker, #ui-datepicker-div");
-    if (!panel) return false;
+    var panel = findCalendarPanel();
+    if (!panel) { logCal("clickDate: no panel"); return false; }
     var allTds = panel.querySelectorAll("td");
     for (var j = 0; j < allTds.length; j++) {
-      var link = allTds[j].querySelector("a");
-      if (link && parseInt(link.textContent) === day && !allTds[j].classList.contains("ui-state-disabled") && !allTds[j].classList.contains("ui-datepicker-unselectable")) {
-        link.click(); return true;
-      }
+      var td = allTds[j];
+      if (td.classList.contains("ui-datepicker-other-month") || td.classList.contains("other-month")) continue;
+      var link = td.querySelector("a");
+      if (!link) continue;
+      if (parseInt(link.textContent.trim()) !== day) continue;
+      if (td.classList.contains("ui-state-disabled") || td.classList.contains("ui-datepicker-unselectable")) continue;
+      logCal("clickDate: clicking day " + day);
+      link.click();
+      return true;
     }
+    logCal("clickDate: no clickable cell for day " + day);
     return false;
   }
 
@@ -337,6 +434,8 @@
     waitFor(findDateInput, function (inp) {
       inp.focus(); inp.click();
       setTimeout(function () {
+        logCal("Date input found. Dumping calendar structure…");
+        dumpCalendar();
         // Try to find an available date in the calendar (up to +MAX_FLEX_DAYS)
         findAvailableDate(inp, DATE, function (finalDate, shifted) {
           if (shifted) {
