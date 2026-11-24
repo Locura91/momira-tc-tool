@@ -59,7 +59,7 @@ def _transfer(id_, dep_name, arr_name, vehicle_type="CAR", active=True, name=Non
 
 def test_a_one_way_transfer_with_no_reverse_is_flagged_as_a_gap():
     transfers = [_transfer("TRANSFER-1", "Cairo Airport", "Hotel Le Meridien")]
-    gaps = transfer_gap_finder.find_missing_reverse_transfers(transfers)
+    gaps, warnings = transfer_gap_finder.find_missing_reverse_transfers(transfers)
     assert len(gaps) == 1
     assert gaps[0]["source"]["id"] == "TRANSFER-1"
     assert gaps[0]["missing_from_name"] == "Hotel Le Meridien"
@@ -71,7 +71,7 @@ def test_a_pair_that_already_exists_both_ways_is_not_flagged():
         _transfer("TRANSFER-1", "Cairo Airport", "Hotel Le Meridien"),
         _transfer("TRANSFER-2", "Hotel Le Meridien", "Cairo Airport"),
     ]
-    gaps = transfer_gap_finder.find_missing_reverse_transfers(transfers)
+    gaps, warnings = transfer_gap_finder.find_missing_reverse_transfers(transfers)
     assert gaps == []
 
 
@@ -83,7 +83,7 @@ def test_matching_is_exact_no_fuzzy_route_matching():
         _transfer("TRANSFER-1", "Cairo Airport", "Hotel Le Meridien"),
         _transfer("TRANSFER-2", "Hotel Le Meridien", "Cairo Downtown"),  # different arrival
     ]
-    gaps = transfer_gap_finder.find_missing_reverse_transfers(transfers)
+    gaps, warnings = transfer_gap_finder.find_missing_reverse_transfers(transfers)
     assert len(gaps) == 2  # both are still missing their true reverse
 
 
@@ -92,7 +92,7 @@ def test_matching_is_case_and_whitespace_insensitive_like_transfer_matcher():
         _transfer("TRANSFER-1", "Cairo Airport", "Hotel Le Meridien"),
         _transfer("TRANSFER-2", "hotel  le meridien", "CAIRO AIRPORT"),
     ]
-    gaps = transfer_gap_finder.find_missing_reverse_transfers(transfers)
+    gaps, warnings = transfer_gap_finder.find_missing_reverse_transfers(transfers)
     assert gaps == []
 
 
@@ -103,7 +103,7 @@ def test_different_vehicle_types_on_the_same_route_are_not_confused_for_each_oth
         _transfer("TRANSFER-1", "Cairo Airport", "Hotel Le Meridien", vehicle_type="SEDAN"),
         _transfer("TRANSFER-2", "Hotel Le Meridien", "Cairo Airport", vehicle_type="VAN"),
     ]
-    gaps = transfer_gap_finder.find_missing_reverse_transfers(transfers)
+    gaps, warnings = transfer_gap_finder.find_missing_reverse_transfers(transfers)
     assert len(gaps) == 2
 
 
@@ -111,19 +111,19 @@ def test_inactive_transfers_are_ignored_entirely():
     transfers = [
         _transfer("TRANSFER-1", "Cairo Airport", "Hotel Le Meridien", active=False),
     ]
-    gaps = transfer_gap_finder.find_missing_reverse_transfers(transfers)
+    gaps, warnings = transfer_gap_finder.find_missing_reverse_transfers(transfers)
     assert gaps == []
 
 
 def test_transfer_missing_a_departure_or_arrival_name_is_skipped_not_flagged():
     broken = _transfer("TRANSFER-1", "", "Hotel Le Meridien")
-    gaps = transfer_gap_finder.find_missing_reverse_transfers([broken])
+    gaps, warnings = transfer_gap_finder.find_missing_reverse_transfers([broken])
     assert gaps == []
 
 
 def test_empty_transfer_list_returns_no_gaps():
-    assert transfer_gap_finder.find_missing_reverse_transfers([]) == []
-    assert transfer_gap_finder.find_missing_reverse_transfers(None) == []
+    assert transfer_gap_finder.find_missing_reverse_transfers([]) == ([], [])
+    assert transfer_gap_finder.find_missing_reverse_transfers(None) == ([], [])
 
 
 def test_scanning_hundreds_of_transfers_makes_no_ai_or_network_call_beyond_the_initial_fetch():
@@ -139,10 +139,54 @@ def test_scanning_hundreds_of_transfers_makes_no_ai_or_network_call_beyond_the_i
         transfers = []
         for i in range(300):
             transfers.append(_transfer(f"TRANSFER-{i}", f"Place {i}", f"Place {i + 1000}"))
-        gaps = transfer_gap_finder.find_missing_reverse_transfers(transfers)
+        gaps, warnings = transfer_gap_finder.find_missing_reverse_transfers(transfers)
         assert len(gaps) == 300
     finally:
         ax._get_anthropic_client = real
+
+
+# ---------------------------------------------------------------------------------------------
+# Fallback matching and spelling-mistake warnings
+# ---------------------------------------------------------------------------------------------
+
+def test_typo_in_location_name_matched_by_display_name_fallback():
+    """REAL BUG: TRANSFER-454260 has 'Phuket Airprot' (typo) while TRANSFER-454261 has
+    'Phuket Airport'. The display names are both correct, so the display-name fallback
+    catches it and returns a warning instead of a false gap."""
+    transfers = [
+        _transfer("454260", "Phuket Airport (HKT)", "Koh Kradan",
+                  name="One-way transfer from Phuket Airport (HKT) - Koh Kradan"),
+        _transfer("454261", "Koh Kradan", "Phuket Airprot (HKT)",
+                  name="One-way transfer from Koh Kradan - Phuket Airport (HKT)"),
+    ]
+    gaps, warnings = transfer_gap_finder.find_missing_reverse_transfers(transfers)
+    assert len(gaps) == 0, f"Expected no gaps but got {len(gaps)}"
+    assert len(warnings) >= 1
+    assert any("spelling" in w["warning"].lower() or "differ" in w["warning"].lower()
+               for w in warnings)
+
+
+def test_qualifier_difference_matched_by_qualifier_stripping():
+    """REAL BUG: TRANSFER-454321 has '(not from Hotel)' while TRANSFER-454323 has
+    '(not to Hotel)'. After stripping parenthetical qualifiers, they match."""
+    transfers = [
+        _transfer("454321", "Koh Lipe Jetty Pier (not from Hotel)", "Trang Airport (TST)"),
+        _transfer("454323", "Trang Airport (TST)", "Koh Lipe Jetty Pier (not to Hotel)"),
+    ]
+    gaps, warnings = transfer_gap_finder.find_missing_reverse_transfers(transfers)
+    assert len(gaps) == 0, f"Expected no gaps but got {len(gaps)}"
+    assert len(warnings) >= 1
+    assert any("qualifier" in w["warning"].lower() for w in warnings)
+
+
+def test_genuine_gap_still_detected_with_fallbacks():
+    """A truly missing reverse is still flagged even with the fallback layers."""
+    transfers = [
+        _transfer("TRANSFER-1", "Bangkok Hotel", "Chiang Mai Airport"),
+    ]
+    gaps, warnings = transfer_gap_finder.find_missing_reverse_transfers(transfers)
+    assert len(gaps) == 1
+    assert len(warnings) == 0
 
 
 # ---------------------------------------------------------------------------------------------

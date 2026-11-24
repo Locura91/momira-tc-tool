@@ -541,7 +541,7 @@ def _scan_transfers(client, supplier_id: str, expected_end: str, check_reverse: 
         # Reuses the same gap finder the "create missing reverse" tool uses, so the two
         # screens can never disagree about what counts as a gap.
         try:
-            for gap in transfer_gap_finder.find_missing_reverse_transfers(transfers):
+            for gap in transfer_gap_finder.find_missing_reverse_transfers(transfers)[0]:
                 src = gap.get("source") or {}
                 if src.get("id"):
                     gap_ids.add(src["id"])

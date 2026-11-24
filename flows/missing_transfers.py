@@ -44,7 +44,7 @@ from app_helpers import _ur_pick_momira_supplier, show_publish_error
 
 _PAGE_SIZE = 25
 
-_RESET_KEYS = ("mtf_gaps", "mtf_supplier_id", "mtf_result", "mtf_page")
+_RESET_KEYS = ("mtf_gaps", "mtf_match_warnings", "mtf_supplier_id", "mtf_result", "mtf_page")
 
 
 def _extract_transfer_list(result):
@@ -92,10 +92,11 @@ def _render_missing_transfers_body(client, supplier_id):
         if fetch_error:
             st.error(f"❌ Couldn't read this supplier's transfers: {fetch_error.get('message', fetch_error)}")
             return
-        gaps = transfer_gap_finder.find_missing_reverse_transfers(existing)
+        gaps, match_warnings = transfer_gap_finder.find_missing_reverse_transfers(existing)
         st.session_state.mtf_gaps = [
             dict(g, accepted=False, index=i, widget_token=f"g{i}") for i, g in enumerate(gaps)
         ]
+        st.session_state.mtf_match_warnings = match_warnings
         st.session_state.mtf_supplier_id = supplier_id
         st.session_state.mtf_page = 0
         st.session_state.pop("mtf_result", None)
@@ -111,6 +112,11 @@ def _render_missing_transfers_body(client, supplier_id):
         st.success(
             f"✅ No gaps found for supplier {scanned_supplier_id} - every live Transfer's "
             "reverse direction already exists.")
+        no_gap_warnings = st.session_state.get("mtf_match_warnings") or []
+        if no_gap_warnings:
+            with st.expander(f"⚠️ {len(no_gap_warnings)} transfer(s) matched only after fuzzy fallback — possible spelling mistakes", expanded=True):
+                for w in no_gap_warnings:
+                    st.warning(w["warning"])
         if st.button("🆕 Scan again", key="mtf_new_empty"):
             for k in _RESET_KEYS:
                 st.session_state.pop(k, None)
@@ -119,6 +125,12 @@ def _render_missing_transfers_body(client, supplier_id):
 
     st.info(f"Found **{len(gaps)}** Transfer(s) for supplier {scanned_supplier_id} with no "
            "reverse-direction pair yet.")
+
+    match_warnings = st.session_state.get("mtf_match_warnings") or []
+    if match_warnings:
+        with st.expander(f"⚠️ {len(match_warnings)} transfer(s) matched only after fuzzy fallback — possible spelling mistakes", expanded=True):
+            for w in match_warnings:
+                st.warning(w["warning"])
 
     acol1, acol2 = st.columns([1, 4])
     with acol1:

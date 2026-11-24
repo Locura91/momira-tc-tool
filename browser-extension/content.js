@@ -1,4 +1,4 @@
-// Momira TC Rollover -- content script v12
+// Momira TC Rollover -- content script v13
 // Runs in world: "MAIN" so PrimeFaces.ab() is accessible when clicking buttons.
 //
 // GOAL: drive the package rollover automatically to the booking SUMMARY, then stop and let
@@ -46,8 +46,9 @@
       var sm = (location.search || "").match(/[?&]tcrscan=(\d+)/) ||
                (location.hash || "").match(/[#&]tcrscan=(\d+)/);
       var scanCount = sm ? Math.max(1, Math.min(parseInt(sm[1]), MAX_SCAN_DATES)) : 1;
+      var SCAN_STEP_DAYS = 3; // +3 days between scan dates to cover 18 days, not 6
       var dates = [];
-      for (var di = 0; di < scanCount; di++) dates.push(addDays(seedDate, di));
+      for (var di = 0; di < scanCount; di++) dates.push(addDays(seedDate, di * SCAN_STEP_DAYS));
       state = {
         active: true,
         date: dates[0], originalDate: dates[0], flexDays: 0,
@@ -730,7 +731,7 @@
       attach();
       var p = readSummaryPrices();
       var done = (p.perPerson !== null || p.total !== null);
-      if (!done && ++tries < 50) return;   // ~20s
+      if (!done && ++tries < 150) return;  // ~60s — TC searches can take up to 40s
       clearInterval(iv);
 
       if (!done) recordPrices();           // log candidates so an odd layout can be mapped
