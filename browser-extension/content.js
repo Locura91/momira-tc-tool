@@ -49,6 +49,10 @@
       var SCAN_STEP_DAYS = 3; // +3 days between scan dates to cover 18 days, not 6
       var dates = [];
       for (var di = 0; di < scanCount; di++) dates.push(addDays(seedDate, di * SCAN_STEP_DAYS));
+      // ?tcrprice=XXXX passes the current package price so we can early-exit when a date
+      // is already within 3% of it (no point scanning further)
+      var pm = (location.search || "").match(/[?&]tcrprice=([\d.]+)/);
+      var currentPrice = pm ? parseFloat(pm[1]) : null;
       state = {
         active: true,
         date: dates[0], originalDate: dates[0], flexDays: 0,
@@ -58,8 +62,7 @@
         idx: 0,
         results: [],
         finalRun: false,
-        // Where to return to before each subsequent date. Captured here because this is the
-        // one moment we are provably standing on the package page.
+        currentPrice: currentPrice,
         ideaUrl: location.origin + location.pathname
       };
       saveState(state);
@@ -68,6 +71,7 @@
         var cleanSearch = (location.search || "")
           .replace(/([?&])tcr=[^&]*&?/, "$1")
           .replace(/([?&])tcrscan=[^&]*&?/, "$1")
+          .replace(/([?&])tcrprice=[^&]*&?/, "$1")
           .replace(/[?&]$/, "");
         history.replaceState(null, "", location.pathname + cleanSearch);
       } catch (e) {}
@@ -92,6 +96,9 @@
 
   var DATE = state.date; // DD.MM.YYYY
   var DATE_FLEX_DAYS = state.flexDays || 0; // how many days we've shifted forward so far
+  console.log("[TC Rollover] Resuming: phase=" + state.phase + " date=" + DATE +
+    (state.scan ? " scan idx=" + state.idx + "/" + state.dates.length : "") +
+    " results=" + (state.results || []).length);
   var MAX_FLEX_DAYS = 30; // scan up to +30 days for an available date
   var ORIGINAL_DATE = state.originalDate || DATE; // the date the user originally chose
 
@@ -709,9 +716,6 @@
   }
 
   function goToIdeaPageForNextDate() {
-    // Back to the package page to start the next date's search from scratch. A full
-    // navigation (not history.back()) because the booking flow's own back behaviour is
-    // unreliable and may restore a cached summary rather than a fresh form.
     var url = state.ideaUrl;
     if (!url) {
       clearState();
@@ -719,22 +723,84 @@
       return;
     }
     setPhase("click_book");
+    console.log("[TC Rollover] Navigating to next date: " + DATE + " (idx " + state.idx + "/" + state.dates.length + "), url: " + url);
     setTimeout(function () { location.href = url; }, 400);
   }
 
-  function phaseReadPrice() {
-    say(scanProgressPrefix() + "Reading the price for <b>" + DATE + "</b>…");
-    var tries = 0;
-    // The price is rendered with the summary, but the summary itself may still be loading,
-    // so poll until a figure appears rather than reading once and recording a blank.
-    var iv = setInterval(function () {
-      attach();
-      var p = readSummaryPrices();
-      var done = (p.perPerson !== null || p.total !== null);
-      if (!done && ++tries < 150) return;  // ~60s — TC searches can take up to 40s
-      clearInterval(iv);
+  function isSearchLoading() {
+    // Primary: the visible "One moment please, we are searching the best prices" overlay text
+    var els = document.querySelectorAll("div, p, span, h1, h2, h3");
+    for (var i = 0; i < els.length; i++) {
+      var t = els[i].textContent || "";
+      if (t.length > 200) continue; // skip large containers — only match the overlay's own text
+      if (/one moment|searching.*best prices|buscando.*mejores precios|einen moment|wir suchen/i.test(t)) {
+        var el = els[i];
+        if (el.offsetParent !== null || (el.style && el.style.display !== "none")) return true;
+      }
+    }
+    // Fallback: TC-specific loading overlay classes
+    var overlay = document.querySelector(".loading-overlay, .search-loading, .trip-search-loading");
+    if (overlay && overlay.offsetParent !== null) return true;
+    return false;
+  }
 
-      if (!done) recordPrices();           // log candidates so an odd layout can be mapped
+  function phaseReadPrice() {
+    say(scanProgressPrefix() + "Waiting for search to complete for <b>" + DATE + "</b>…");
+    var waitTries = 0;
+    var sawLoading = false;
+    var searchDoneTries = 0;
+
+    // Phase 1: wait for loading to START (max 10s), or if it's already done skip ahead
+    var waitForLoading = setInterval(function () {
+      attach();
+      if (isSearchLoading()) {
+        sawLoading = true;
+        clearInterval(waitForLoading);
+        say(scanProgressPrefix() + "Search running for <b>" + DATE + "</b>… waiting for results.");
+        startWaitForCompletion();
+        return;
+      }
+      if (++waitTries > 25) { // 10s — if no loading indicator appeared, check for price anyway
+        clearInterval(waitForLoading);
+        console.log("[TC Rollover] No loading indicator detected after 10s, reading price directly");
+        startWaitForCompletion();
+      }
+    }, 400);
+
+    // Phase 2: wait for loading to END, then read the price
+    function startWaitForCompletion() {
+      var completionTries = 0;
+      var iv = setInterval(function () {
+        attach();
+        if (isSearchLoading()) {
+          completionTries = 0; // reset — still loading
+          if (++searchDoneTries > 250) { // ~100s total safety limit
+            clearInterval(iv);
+            console.log("[TC Rollover] Search timed out after 100s");
+            recordAndAdvance({ perPerson: null, total: null, currency: "EUR", source: "timeout" });
+          }
+          return;
+        }
+        // Loading gone — but wait a moment for the DOM to settle
+        if (++completionTries < 5) return; // 2s settle time
+        clearInterval(iv);
+
+        say(scanProgressPrefix() + "Search done. Reading price for <b>" + DATE + "</b>…");
+        // Poll for the actual price (it may take a moment to render after loading clears)
+        var priceTries = 0;
+        var priceIv = setInterval(function () {
+          attach();
+          var p = readSummaryPrices();
+          var done = (p.perPerson !== null || p.total !== null);
+          if (!done && ++priceTries < 25) return; // 10s for price to render
+          clearInterval(priceIv);
+          if (!done) recordPrices();
+          recordAndAdvance(p);
+        }, 400);
+      }, 400);
+    }
+
+    function recordAndAdvance(p) {
       state.results = state.results || [];
       state.results.push({
         date: DATE,
@@ -745,6 +811,24 @@
 
       var shown = p.perPerson !== null ? p.perPerson + " € p.P." : "no price found";
       say(scanProgressPrefix() + "<b>" + DATE + "</b>: " + shown + resultsTable());
+
+      // Early exit: if this price is within 3% of (or cheaper than) the current package
+      // price, no need to scan more dates — this is already good enough.
+      var EARLY_EXIT_THRESHOLD = 1.03;
+      if (state.currentPrice && p.perPerson !== null && p.perPerson <= state.currentPrice * EARLY_EXIT_THRESHOLD) {
+        console.log("[TC Rollover] Early exit: " + p.perPerson + " <= " + state.currentPrice + " * 1.03 = " + (state.currentPrice * EARLY_EXIT_THRESHOLD).toFixed(2));
+        state.finalRun = true;
+        state.date = DATE;
+        state.originalDate = DATE;
+        state.flexDays = 0;
+        saveState(state);
+        var relation = p.perPerson <= state.currentPrice ? "cheaper" : "within 3%";
+        say("⚡ Early exit: <b>" + DATE + "</b> at <b>" + p.perPerson + " €</b> is " + relation +
+            " of the current price (" + state.currentPrice + " €)." +
+            resultsTable() + "<br>Re-quoting this date now…");
+        goToIdeaPageForNextDate();
+        return;
+      }
 
       state.idx = (state.idx || 0) + 1;
       if (state.idx < state.dates.length) {
@@ -757,7 +841,6 @@
         return;
       }
 
-      // All dates scanned — re-quote the cheapest one and stop there for the human.
       var best = cheapestResult();
       if (!best) {
         clearState();
@@ -775,7 +858,7 @@
       say("✅ Cheapest is <b>" + best.date + "</b> at <b>" + best.perPerson + " € p.P.</b>" +
           resultsTable() + "<br>Re-quoting that date now…");
       goToIdeaPageForNextDate();
-    }, 400);
+    }
   }
 
   function phaseSummary() {
