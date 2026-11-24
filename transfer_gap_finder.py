@@ -98,26 +98,59 @@ def _route_signature(transfer: Dict[str, Any]):
     return dep_name, arr_name, vehicle
 
 
+def _transfer_display_name_signature(transfer: Dict[str, Any]):
+    """Fallback signature from the transfer's display name (parsed cities), so two transfers
+    with slightly different location names (typos, qualifiers) still match when the parsed
+    route cities agree."""
+    vehicle = (transfer.get("vehicleType") or "").strip().lower()
+    src_name = transfer.get("name") or ((transfer.get("datasheets") or {}).get("EN") or {}).get("name") or ""
+    frm, to = _parse_route_cities_from_name(src_name)
+    if not frm or not to:
+        return None
+    return normalize_name(frm), normalize_name(to), vehicle
+
+
+def _transfer_strip_qualifier(name: str) -> str:
+    return _re.sub(r"\s*\([^)]*\)\s*", " ", name).strip()
+
+
+def _transfer_base_signature(sig):
+    if not sig:
+        return None
+    dep, arr, vt = sig
+    return _transfer_strip_qualifier(dep), _transfer_strip_qualifier(arr), vt
+
+
 def find_missing_reverse_transfers(transfers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Given a supplier's full live transfer list (exactly what GET /transfer/{supplierId}
     returns - a plain list of ContractTransferVO-shaped dicts), returns one entry per transfer
     whose exact reverse route is NOT present elsewhere in the same list:
 
         {"source": transfer, "missing_from_name": str, "missing_to_name": str,
-         "vehicle_type": str}
+         "vehicle_type": str, "warning": str|None}
 
-    "missing_from_name"/"missing_to_name" describe the direction that needs to be CREATED - the
-    reverse of the source transfer's own departure/arrival. Only transfers with both a
-    departure and an arrival name are considered (nothing else can be paired at all); a
-    transfer missing one or both names is silently skipped, not flagged as a false gap.
+    Three matching layers (same as find_missing_reverse_transports):
+      1. Exact route signature (departure name + arrival name + vehicleType)
+      2. Display-name fallback (parsed cities from the transfer's display name)
+      3. Qualifier-stripped fallback (parenthetical qualifiers removed)
 
-    Deliberately excludes any transfer whose 'active' field is explicitly False - an inactive
-    (retired) transfer's missing reverse isn't a real gap to fill.
+    When layer 2 or 3 catches a match that layer 1 missed, the transfer is NOT flagged as a
+    gap, but a warning is returned explaining why the exact match failed (typically a spelling
+    mistake or qualifier difference) so the human can fix the data in TC.
+
+    Deliberately excludes any transfer whose 'active' field is explicitly False.
     """
     live = [t for t in (transfers or []) if t.get("active") is not False]
+
     signatures = {_route_signature(t) for t in live}
+    display_signatures = {sig for sig in (_transfer_display_name_signature(t) for t in live) if sig}
+    base_signatures = {_transfer_base_signature(s) for s in signatures if s}
+    base_display_signatures = {_transfer_base_signature(s) for s in display_signatures if s}
+    base_signatures.discard(None)
+    base_display_signatures.discard(None)
 
     gaps = []
+    warnings = []
     for t in live:
         departure = t.get("departure") or {}
         arrival = t.get("arrival") or {}
@@ -127,14 +160,52 @@ def find_missing_reverse_transfers(transfers: List[Dict[str, Any]]) -> List[Dict
             continue
         dep_norm, arr_norm, vehicle = _route_signature(t)
         reverse_signature = (arr_norm, dep_norm, vehicle)
-        if reverse_signature not in signatures:
-            gaps.append({
-                "source": t,
-                "missing_from_name": arr_name,
-                "missing_to_name": dep_name,
-                "vehicle_type": t.get("vehicleType") or "",
-            })
-    return gaps
+        if reverse_signature in signatures:
+            continue
+
+        # Fallback: display-name match (catches typos in location names)
+        dsig = _transfer_display_name_signature(t)
+        if dsig:
+            d_dep, d_arr, d_type = dsig
+            if (d_arr, d_dep, d_type) in display_signatures:
+                tid = t.get("id") or "?"
+                warnings.append({
+                    "source": t,
+                    "transfer_id": tid,
+                    "warning": f"Possible spelling mistake: '{dep_name}' or '{arr_name}' "
+                               f"differs from its reverse pair's location name. "
+                               f"The reverse transfer exists but exact name matching failed. "
+                               f"Please check the location names in TC for TRANSFER-{tid}.",
+                    "match_layer": "display_name",
+                })
+                continue
+
+        # Fallback: qualifier-stripped match (catches "(not from Hotel)" vs "(not to Hotel)")
+        bsig = _transfer_base_signature((dep_norm, arr_norm, vehicle))
+        if bsig:
+            b_dep, b_arr, b_type = bsig
+            if (b_arr, b_dep, b_type) in base_signatures or (b_arr, b_dep, b_type) in base_display_signatures:
+                tid = t.get("id") or "?"
+                warnings.append({
+                    "source": t,
+                    "transfer_id": tid,
+                    "warning": f"Qualifier difference: '{dep_name}' / '{arr_name}' "
+                               f"matched its reverse only after stripping parenthetical "
+                               f"qualifiers. The reverse transfer exists. "
+                               f"Check TRANSFER-{tid} location qualifiers in TC.",
+                    "match_layer": "qualifier_stripped",
+                })
+                continue
+
+        gaps.append({
+            "source": t,
+            "missing_from_name": arr_name,
+            "missing_to_name": dep_name,
+            "vehicle_type": t.get("vehicleType") or "",
+            "warning": None,
+        })
+
+    return gaps, warnings
 
 
 def build_and_rewrite_transfer_swap_payload(source: Dict[str, Any]):
