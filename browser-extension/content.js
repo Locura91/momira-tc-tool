@@ -764,78 +764,57 @@
 
   function phaseReadPrice() {
     say(scanProgressPrefix() + "Waiting for search to complete for <b>" + DATE + "</b>…");
-    var waitTries = 0;
-    var searchDoneTries = 0;
+    var totalTries = 0;
+    var sawLoading = false;
+    var loadingGone = false;
 
-    // Phase 1: wait for loading to START (max 10s), or if it's already done skip ahead
-    var waitForLoading = setInterval(function () {
+    // Single loop: poll every 500ms, max 120s. As soon as loading ends and the price
+    // element has a value, grab it and move on. No separate phases, no settle delays.
+    var iv = setInterval(function () {
       attach();
-      if (isSearchLoading()) {
-        clearInterval(waitForLoading);
-        say(scanProgressPrefix() + "Search running for <b>" + DATE + "</b>… waiting for results.");
-        startWaitForCompletion();
-        return;
-      }
-      // Even before loading starts, check if the price element is already visible
-      var early = readPriceFromSummaryElement();
-      if (early) {
-        clearInterval(waitForLoading);
-        console.log("[TC Rollover] Price element visible before loading started: " + early.perPerson);
-        // Wait a beat to make sure it's not stale from a previous search
-        setTimeout(function () {
-          var confirm = readPriceFromSummaryElement();
-          recordAndAdvance(confirm || early);
-        }, 1500);
-        return;
-      }
-      if (++waitTries > 25) { // 10s
-        clearInterval(waitForLoading);
-        console.log("[TC Rollover] No loading indicator detected after 10s, reading price directly");
-        startWaitForCompletion();
-      }
-    }, 400);
+      totalTries++;
 
-    // Phase 2: wait for loading to END, then read the price from the confirmed selector
-    function startWaitForCompletion() {
-      var completionTries = 0;
-      var iv = setInterval(function () {
-        attach();
-        if (isSearchLoading()) {
-          completionTries = 0;
-          if (++searchDoneTries > 250) { // ~100s total safety limit
-            clearInterval(iv);
-            console.log("[TC Rollover] Search timed out after 100s");
-            recordAndAdvance({ perPerson: null, total: null, currency: "EUR", source: "timeout" });
-          }
-          return;
+      var loading = isSearchLoading();
+      if (loading) {
+        sawLoading = true;
+        loadingGone = false;
+        if (totalTries > 240) { // 120s hard cap
+          clearInterval(iv);
+          console.log("[TC Rollover] Search timed out after 120s");
+          recordAndAdvance({ perPerson: null, total: null, currency: "EUR", source: "timeout" });
         }
-        if (++completionTries < 5) return; // 2s settle time
-        clearInterval(iv);
+        return;
+      }
 
+      // Loading is not active right now
+      if (sawLoading && !loadingGone) {
+        loadingGone = true;
         say(scanProgressPrefix() + "Search done. Reading price for <b>" + DATE + "</b>…");
-        var priceTries = 0;
-        var priceIv = setInterval(function () {
-          attach();
-          // Primary: confirmed-live summary price element
-          var p = readPriceFromSummaryElement();
-          if (!p) {
-            // Fallback: generic text-matching approach
-            var generic = readSummaryPrices();
-            if (generic.perPerson !== null || generic.total !== null) p = generic;
-          }
-          if (p) {
-            clearInterval(priceIv);
-            recordAndAdvance(p);
-            return;
-          }
-          if (++priceTries >= 25) { // 10s for price to render
-            clearInterval(priceIv);
-            recordPrices();
-            recordAndAdvance({ perPerson: null, total: null, currency: "EUR", source: "not found" });
-          }
-        }, 400);
-      }, 400);
-    }
+      }
+
+      // Try to read the price (whether we ever saw loading or not)
+      var p = readPriceFromSummaryElement();
+      if (!p) {
+        var generic = readSummaryPrices();
+        if (generic.perPerson !== null || generic.total !== null) p = generic;
+      }
+
+      if (p) {
+        // If we never saw loading, the price might be stale — wait 1 more tick to confirm
+        if (!sawLoading && totalTries < 4) return;
+        clearInterval(iv);
+        recordAndAdvance(p);
+        return;
+      }
+
+      // No price yet — keep trying, but cap at 120s
+      if (totalTries > 240) {
+        clearInterval(iv);
+        recordPrices();
+        recordAndAdvance({ perPerson: null, total: null, currency: "EUR", source: "not found" });
+      }
+    }, 500);
+  }
 
     function recordAndAdvance(p) {
       state.results = state.results || [];
