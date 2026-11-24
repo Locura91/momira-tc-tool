@@ -723,19 +723,72 @@
     setTimeout(function () { location.href = url; }, 400);
   }
 
-  function phaseReadPrice() {
-    say(scanProgressPrefix() + "Reading the price for <b>" + DATE + "</b>…");
-    var tries = 0;
-    // The price is rendered with the summary, but the summary itself may still be loading,
-    // so poll until a figure appears rather than reading once and recording a blank.
-    var iv = setInterval(function () {
-      attach();
-      var p = readSummaryPrices();
-      var done = (p.perPerson !== null || p.total !== null);
-      if (!done && ++tries < 150) return;  // ~60s — TC searches can take up to 40s
-      clearInterval(iv);
+  function isSearchLoading() {
+    var body = document.body ? document.body.textContent : "";
+    if (/one moment|searching.*best prices|buscando.*mejores precios|einen moment|wir suchen/i.test(body)) return true;
+    var overlay = document.querySelector(".loading-overlay, .search-loading, .trip-search-loading, [class*='loading'], [class*='spinner']");
+    if (overlay && overlay.offsetParent !== null) return true;
+    if (overlay && overlay.style && overlay.style.display !== "none") return true;
+    return false;
+  }
 
-      if (!done) recordPrices();           // log candidates so an odd layout can be mapped
+  function phaseReadPrice() {
+    say(scanProgressPrefix() + "Waiting for search to complete for <b>" + DATE + "</b>…");
+    var waitTries = 0;
+    var sawLoading = false;
+    var searchDoneTries = 0;
+
+    // Phase 1: wait for loading to START (max 10s), or if it's already done skip ahead
+    var waitForLoading = setInterval(function () {
+      attach();
+      if (isSearchLoading()) {
+        sawLoading = true;
+        clearInterval(waitForLoading);
+        say(scanProgressPrefix() + "Search running for <b>" + DATE + "</b>… waiting for results.");
+        startWaitForCompletion();
+        return;
+      }
+      if (++waitTries > 25) { // 10s — if no loading indicator appeared, check for price anyway
+        clearInterval(waitForLoading);
+        console.log("[TC Rollover] No loading indicator detected after 10s, reading price directly");
+        startWaitForCompletion();
+      }
+    }, 400);
+
+    // Phase 2: wait for loading to END, then read the price
+    function startWaitForCompletion() {
+      var completionTries = 0;
+      var iv = setInterval(function () {
+        attach();
+        if (isSearchLoading()) {
+          completionTries = 0; // reset — still loading
+          if (++searchDoneTries > 250) { // ~100s total safety limit
+            clearInterval(iv);
+            console.log("[TC Rollover] Search timed out after 100s");
+            recordAndAdvance({ perPerson: null, total: null, currency: "EUR", source: "timeout" });
+          }
+          return;
+        }
+        // Loading gone — but wait a moment for the DOM to settle
+        if (++completionTries < 5) return; // 2s settle time
+        clearInterval(iv);
+
+        say(scanProgressPrefix() + "Search done. Reading price for <b>" + DATE + "</b>…");
+        // Poll for the actual price (it may take a moment to render after loading clears)
+        var priceTries = 0;
+        var priceIv = setInterval(function () {
+          attach();
+          var p = readSummaryPrices();
+          var done = (p.perPerson !== null || p.total !== null);
+          if (!done && ++priceTries < 25) return; // 10s for price to render
+          clearInterval(priceIv);
+          if (!done) recordPrices();
+          recordAndAdvance(p);
+        }, 400);
+      }, 400);
+    }
+
+    function recordAndAdvance(p) {
       state.results = state.results || [];
       state.results.push({
         date: DATE,
@@ -758,7 +811,6 @@
         return;
       }
 
-      // All dates scanned — re-quote the cheapest one and stop there for the human.
       var best = cheapestResult();
       if (!best) {
         clearState();
@@ -776,7 +828,7 @@
       say("✅ Cheapest is <b>" + best.date + "</b> at <b>" + best.perPerson + " € p.P.</b>" +
           resultsTable() + "<br>Re-quoting that date now…");
       goToIdeaPageForNextDate();
-    }, 400);
+    }
   }
 
   function phaseSummary() {
