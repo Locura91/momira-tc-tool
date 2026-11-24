@@ -75,21 +75,23 @@ def test_target_url_falls_back_to_bare_when_there_is_no_title():
 # process for 7 different dates, and only the one date with the lowest price will be
 # displayed... so that our prices will be lower."
 
-def test_scan_dates_are_seven_consecutive_days():
-    """The extension derives its 7 dates from the single seed date by adding days, so the
-    contract the tool relies on is simply D, D+1 ... D+6 - no gaps, no weekday skipping."""
+def test_scan_dates_are_seven_dates_spaced_three_days_apart():
+    """The extension derives its 7 dates from the seed date with +3 day spacing,
+    covering 18 days total to skip short hotel blackouts."""
     from datetime import date as _date, timedelta as _td
+    STEP = 3
     start = _date(2027, 4, 19)
-    dates = [(start + _td(days=i)).strftime("%d.%m.%Y") for i in range(7)]
+    dates = [(start + _td(days=i * STEP)).strftime("%d.%m.%Y") for i in range(7)]
     assert dates == [
-        "19.04.2027", "20.04.2027", "21.04.2027", "22.04.2027",
-        "23.04.2027", "24.04.2027", "25.04.2027",
+        "19.04.2027", "22.04.2027", "25.04.2027", "28.04.2027",
+        "01.05.2027", "04.05.2027", "07.05.2027",
     ]
 
 
 def test_scan_window_crosses_a_month_boundary_correctly():
     from datetime import date as _date, timedelta as _td
+    STEP = 3
     start = _date(2027, 4, 28)
-    dates = [(start + _td(days=i)).strftime("%d.%m.%Y") for i in range(7)]
-    assert dates[-1] == "04.05.2027"
-    assert "30.04.2027" in dates and "01.05.2027" in dates
+    dates = [(start + _td(days=i * STEP)).strftime("%d.%m.%Y") for i in range(7)]
+    assert dates[-1] == "16.05.2027"
+    assert "01.05.2027" in dates and "07.05.2027" in dates
