@@ -731,7 +731,7 @@
       attach();
       var p = readSummaryPrices();
       var done = (p.perPerson !== null || p.total !== null);
-      if (!done && ++tries < 50) return;   // ~20s
+      if (!done && ++tries < 150) return;  // ~60s — TC searches can take up to 40s
       clearInterval(iv);
 
       if (!done) recordPrices();           // log candidates so an odd layout can be mapped
