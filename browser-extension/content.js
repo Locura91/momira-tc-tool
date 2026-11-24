@@ -92,6 +92,9 @@
 
   var DATE = state.date; // DD.MM.YYYY
   var DATE_FLEX_DAYS = state.flexDays || 0; // how many days we've shifted forward so far
+  console.log("[TC Rollover] Resuming: phase=" + state.phase + " date=" + DATE +
+    (state.scan ? " scan idx=" + state.idx + "/" + state.dates.length : "") +
+    " results=" + (state.results || []).length);
   var MAX_FLEX_DAYS = 30; // scan up to +30 days for an available date
   var ORIGINAL_DATE = state.originalDate || DATE; // the date the user originally chose
 
@@ -709,9 +712,6 @@
   }
 
   function goToIdeaPageForNextDate() {
-    // Back to the package page to start the next date's search from scratch. A full
-    // navigation (not history.back()) because the booking flow's own back behaviour is
-    // unreliable and may restore a cached summary rather than a fresh form.
     var url = state.ideaUrl;
     if (!url) {
       clearState();
@@ -719,6 +719,7 @@
       return;
     }
     setPhase("click_book");
+    console.log("[TC Rollover] Navigating to next date: " + DATE + " (idx " + state.idx + "/" + state.dates.length + "), url: " + url);
     setTimeout(function () { location.href = url; }, 400);
   }
 
