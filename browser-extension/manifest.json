@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Momira TC Rollover",
-  "version": "5.7.0",
+  "version": "5.8.0",
   "description": "Automates package rollover on momira.travel. Single mode: clicks Book directly without changes, fills the departure date, starts the search and highlights 'Save and overwrite the existing package' for the human to accept. Scan mode (?tcrscan=7): runs that search for 7 dates spaced 3 days apart (covering 18 days), reads the price per person each time, then re-quotes the cheapest and stops there. Never clicks 'Book the trip' and never overwrites by itself.",
   "content_scripts": [
     {

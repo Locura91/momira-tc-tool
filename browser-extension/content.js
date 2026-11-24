@@ -49,6 +49,10 @@
       var SCAN_STEP_DAYS = 3; // +3 days between scan dates to cover 18 days, not 6
       var dates = [];
       for (var di = 0; di < scanCount; di++) dates.push(addDays(seedDate, di * SCAN_STEP_DAYS));
+      // ?tcrprice=XXXX passes the current package price so we can early-exit when a date
+      // is already within 3% of it (no point scanning further)
+      var pm = (location.search || "").match(/[?&]tcrprice=([\d.]+)/);
+      var currentPrice = pm ? parseFloat(pm[1]) : null;
       state = {
         active: true,
         date: dates[0], originalDate: dates[0], flexDays: 0,
@@ -58,8 +62,7 @@
         idx: 0,
         results: [],
         finalRun: false,
-        // Where to return to before each subsequent date. Captured here because this is the
-        // one moment we are provably standing on the package page.
+        currentPrice: currentPrice,
         ideaUrl: location.origin + location.pathname
       };
       saveState(state);
@@ -68,6 +71,7 @@
         var cleanSearch = (location.search || "")
           .replace(/([?&])tcr=[^&]*&?/, "$1")
           .replace(/([?&])tcrscan=[^&]*&?/, "$1")
+          .replace(/([?&])tcrprice=[^&]*&?/, "$1")
           .replace(/[?&]$/, "");
         history.replaceState(null, "", location.pathname + cleanSearch);
       } catch (e) {}
@@ -724,11 +728,19 @@
   }
 
   function isSearchLoading() {
-    var body = document.body ? document.body.textContent : "";
-    if (/one moment|searching.*best prices|buscando.*mejores precios|einen moment|wir suchen/i.test(body)) return true;
-    var overlay = document.querySelector(".loading-overlay, .search-loading, .trip-search-loading, [class*='loading'], [class*='spinner']");
+    // Primary: the visible "One moment please, we are searching the best prices" overlay text
+    var els = document.querySelectorAll("div, p, span, h1, h2, h3");
+    for (var i = 0; i < els.length; i++) {
+      var t = els[i].textContent || "";
+      if (t.length > 200) continue; // skip large containers — only match the overlay's own text
+      if (/one moment|searching.*best prices|buscando.*mejores precios|einen moment|wir suchen/i.test(t)) {
+        var el = els[i];
+        if (el.offsetParent !== null || (el.style && el.style.display !== "none")) return true;
+      }
+    }
+    // Fallback: TC-specific loading overlay classes
+    var overlay = document.querySelector(".loading-overlay, .search-loading, .trip-search-loading");
     if (overlay && overlay.offsetParent !== null) return true;
-    if (overlay && overlay.style && overlay.style.display !== "none") return true;
     return false;
   }
 
@@ -799,6 +811,24 @@
 
       var shown = p.perPerson !== null ? p.perPerson + " € p.P." : "no price found";
       say(scanProgressPrefix() + "<b>" + DATE + "</b>: " + shown + resultsTable());
+
+      // Early exit: if this price is within 3% of (or cheaper than) the current package
+      // price, no need to scan more dates — this is already good enough.
+      var EARLY_EXIT_THRESHOLD = 1.03;
+      if (state.currentPrice && p.perPerson !== null && p.perPerson <= state.currentPrice * EARLY_EXIT_THRESHOLD) {
+        console.log("[TC Rollover] Early exit: " + p.perPerson + " <= " + state.currentPrice + " * 1.03 = " + (state.currentPrice * EARLY_EXIT_THRESHOLD).toFixed(2));
+        state.finalRun = true;
+        state.date = DATE;
+        state.originalDate = DATE;
+        state.flexDays = 0;
+        saveState(state);
+        var relation = p.perPerson <= state.currentPrice ? "cheaper" : "within 3%";
+        say("⚡ Early exit: <b>" + DATE + "</b> at <b>" + p.perPerson + " €</b> is " + relation +
+            " of the current price (" + state.currentPrice + " €)." +
+            resultsTable() + "<br>Re-quoting this date now…");
+        goToIdeaPageForNextDate();
+        return;
+      }
 
       state.idx = (state.idx || 0) + 1;
       if (state.idx < state.dates.length) {

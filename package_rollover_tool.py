@@ -449,6 +449,8 @@ def _render_rollover_body(pkg_id, title, current_price, pax, key_prefix,
     _rollover_url = package_url + _sep + "tcr=" + _quote(chosen_str)
     if scan_count > 1:
         _rollover_url += "&tcrscan=" + str(scan_count)
+    if current_price is not None and isinstance(current_price, (int, float)) and current_price > 0:
+        _rollover_url += "&tcrprice=" + str(round(current_price, 2))
 
     # CONFIRMED REAL SYMPTOM (operator, 2026-11-23): "I click start rollover in Travel
     # Compositor and nothing happened... this worked already this afternoon."
@@ -498,6 +500,8 @@ def _render_rollover_body(pkg_id, title, current_price, pax, key_prefix,
             _bare_url = _bare + "?tcr=" + _quote(chosen_str)
             if scan_count > 1:
                 _bare_url += "&tcrscan=" + str(scan_count)
+            if current_price is not None and isinstance(current_price, (int, float)) and current_price > 0:
+                _bare_url += "&tcrprice=" + str(round(current_price, 2))
             st.link_button(
                 "Open without the title slug",
                 _bare_url,
