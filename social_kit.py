@@ -921,31 +921,56 @@ def render(pack: Package, fmt: str = "square", style: str = "photo", photo: Opti
 
         return canvas
 
-    # --- template 1: photo-first, laid out from the bottom up so a long title
-    # can never push the price off the image.
+    # --- template 1: photo-first, content block vertically centred so the
+    # title stays visible in Instagram's profile grid (centre-square crop).
     small = _font("regular", int(26 * unit))
-    y = height - pad - safe - int(18 * unit)
-
-    draw.text((pad, y), brand.site, font=small, fill=(255, 255, 255), anchor="ls")
     cta_font = _font("bold", int(26 * unit))
-    draw.text((width - pad, y), _t(brand, "poster_cta"), font=cta_font, fill=MINT, anchor="rs")
-
-    y -= int(58 * unit)
-    if price_line:
-        draw.text((pad, y), price_line, font=_font("bold", int(44 * unit)), fill=(255, 255, 255), anchor="ls")
-        y -= int(62 * unit)
-
-    if meta:
-        draw.text((pad, y), _wrap(draw, meta, small, width - pad * 2, 1)[0], font=small, fill=(226, 232, 236), anchor="ls")
-        y -= int(56 * unit)
-
     title_font = _font("bold", int((54 if height > width else 52) * unit))
-    for line in reversed(_wrap(draw, pack.title, title_font, width - pad * 2, 3)):
-        draw.text((pad, y), line, font=title_font, fill=(255, 255, 255), anchor="ls")
-        y -= int(title_font.size * 1.26)
+    price_font = _font("bold", int(44 * unit))
+    kicker_font = _font("bold", int(26 * unit))
 
+    title_lines = _wrap(draw, pack.title, title_font, width - pad * 2, 3)
+    meta_line = _wrap(draw, meta, small, width - pad * 2, 1)[0] if meta else ""
+
+    # measure the content block height (kicker + title + meta + price + footer)
+    block_h = 0
     if kicker:
-        draw.text((pad, y - int(10 * unit)), kicker.upper(), font=_font("bold", int(26 * unit)), fill=MINT, anchor="ls")
+        block_h += int(46 * unit)
+    block_h += len(title_lines) * int(title_font.size * 1.26)
+    block_h += int(16 * unit)
+    if meta_line:
+        block_h += int(56 * unit)
+    if price_line:
+        block_h += int(62 * unit)
+    block_h += int(58 * unit)
+
+    # centre the block vertically, clamped within safe margins
+    top_margin = pad + int(60 * unit)
+    bot_margin = pad + safe + int(18 * unit)
+    block_top = max(top_margin, (height - block_h) // 2)
+
+    # draw top-down from the centred position
+    y = block_top
+    if kicker:
+        draw.text((pad, y), kicker.upper(), font=kicker_font, fill=MINT, anchor="lt")
+        y += int(46 * unit)
+
+    for line in title_lines:
+        draw.text((pad, y), line, font=title_font, fill=(255, 255, 255), anchor="lt")
+        y += int(title_font.size * 1.26)
+
+    y += int(16 * unit)
+    if meta_line:
+        draw.text((pad, y), meta_line, font=small, fill=(226, 232, 236), anchor="lt")
+        y += int(56 * unit)
+
+    if price_line:
+        draw.text((pad, y), price_line, font=price_font, fill=(255, 255, 255), anchor="lt")
+        y += int(62 * unit)
+
+    y += int(20 * unit)
+    draw.text((pad, y), brand.site, font=small, fill=(255, 255, 255), anchor="lt")
+    draw.text((width - pad, y + int(small.size * 0.5)), _t(brand, "poster_cta"), font=cta_font, fill=MINT, anchor="rm")
 
     _pill(draw, (pad, pad), brand.wordmark, _font("bold", int(22 * unit)), BRAND, (255, 255, 255), int(24 * unit))
 
