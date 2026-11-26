@@ -816,7 +816,7 @@
     }, 500);
   }
 
-    function recordAndAdvance(p) {
+  function recordAndAdvance(p) {
       state.results = state.results || [];
       state.results.push({
         date: DATE,
@@ -874,7 +874,6 @@
       say("✅ Cheapest is <b>" + best.date + "</b> at <b>" + best.perPerson + " € p.P.</b>" +
           resultsTable() + "<br>Re-quoting that date now…");
       goToIdeaPageForNextDate();
-    }
   }
 
   function phaseSummary() {
