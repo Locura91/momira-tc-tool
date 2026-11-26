@@ -894,7 +894,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-10-24-rollover-ext"
+BUILD_VERSION = "2026-11-26-unified-ct"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
