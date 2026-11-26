@@ -2583,7 +2583,6 @@ if st.session_state.extracted:
     st.header("Step 5 — Review & Edit")
     _prefilled_from_live = (st.session_state.raw_preview or "").startswith("(No new document")
     if _prefilled_from_live:
-        st.info("All information is pre-filled from the current live data. Review and edit below if needed.")
         col2 = st.container()
     else:
         col1, col2 = st.columns(2)
@@ -2747,9 +2746,7 @@ if st.session_state.extracted:
             render_closable_image_section(True, "🖼️ Or search free stock photos (Pixabay)", "pixabay_closed", _ct_add_pixabay)
 
     _hide_modality_sections = action == "update_tour" and not is_option_only
-    if _hide_modality_sections:
-        st.info("Departure schedule and pricing belong to individual modalities. "
-                "After saving the tour information above, use the modality review to update prices and schedules.")
+    price_list_valid = True
 
     if not _hide_modality_sections:
         st.subheader("Departure Schedule")
@@ -3096,8 +3093,9 @@ if st.session_state.extracted:
     # as a real destination re-verification step and is misleading friction for a modality-only
     # update - relabel it to plain "Continue" for this case.
     _ct_continue_label = "➡️ Continue" if is_option_only else "🔎 Check Locations & Continue"
+    _continue_enabled = price_list_valid if not _hide_modality_sections else True
     if st.button(_ct_continue_label,
-                disabled=not price_list_valid):
+                disabled=not _continue_enabled):
         # CONFIRMED BUG FIX (audit CRITICAL #3, 2026-09-01): used to fall back to a fresh,
         # UN-validated read of st.session_state.fetched_tour_provider_code here - if that global
         # was stale (left over from checking a different tour), it could win over an empty
