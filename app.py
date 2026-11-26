@@ -3092,7 +3092,7 @@ if st.session_state.extracted:
     # step to actually check. The button/spinner used to still say "Check Locations", which reads
     # as a real destination re-verification step and is misleading friction for a modality-only
     # update - relabel it to plain "Continue" for this case.
-    _ct_continue_label = "➡️ Continue" if is_option_only else "🔎 Check Locations & Continue"
+    _ct_continue_label = "➡️ Continue" if (is_option_only or _hide_modality_sections) else "🔎 Check Locations & Continue"
     _continue_enabled = price_list_valid if not _hide_modality_sections else True
     if st.button(_ct_continue_label,
                 disabled=not _continue_enabled):
@@ -3158,7 +3158,7 @@ if st.session_state.extracted:
         # payloads["itinerary_resolution"] is always empty here - skip the section heading
         # entirely instead of showing "Destination Check" over a blank list, which read as if a
         # check had happened (or was still needed) when there was never anything to check.
-        if not is_option_only:
+        if not is_option_only and not _hide_modality_sections:
             st.subheader("Destination Check — verify these against Travel Compositor before publishing")
             for res in payloads["itinerary_resolution"]:
                 if res["valid"]:
