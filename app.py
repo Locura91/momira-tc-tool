@@ -759,6 +759,7 @@ from flows.inventory_audit import render_inventory_audit_flow
 from flows.transport_image_bulk import render_transport_image_bulk_flow
 from flows.transport_inventory_audit import render_transport_inventory_audit_flow
 from flows.image_bulk import render_image_bulk_flow
+from flexible_schedule_audit import render_flexible_schedule_audit
 
 
 
@@ -776,84 +777,12 @@ from flows.price_refresh import render_price_refresh_flow, render_ticket_price_r
 
 st.set_page_config(page_title="Momira Travel Platform", layout="wide")
 
-# ---- Shared-password login gate (2026-11-02, product-owner request: "should we also include
-# a login to the app?") --------------------------------------------------------------------
-# This tool can publish/modify live Travel Compositor pricing and now also looks up real
-# customer booking/flight/passenger data (Flight Change Monitor) - it was reachable by anyone
-# with the URL. A single team password, not full multi-user accounts, is the deliberately
-# minimal fix: set APP_PASSWORD in the server's .env (same place as TRAVELC_USERNAME etc) or in
-# Streamlit secrets. If APP_PASSWORD is unset, the gate is skipped entirely (so local dev / a
-# fresh checkout with no .env configured still runs) - this means setting it on the live server
-# is what actually turns the gate on, not a code change.
-#
-# PERSISTENT LOGIN (2026-11-03, product-owner request: "if I'm logged in once, I would like
-# that the user stays into it, for a minimum 24 hours"). st.session_state alone does NOT survive
-# closing the browser/tab - it's tied to the live WebSocket connection. A real "stay logged in"
-# needs a browser-side cookie plus a server-side session record, so re-opening the tab tomorrow
-# still works. Implementation: on successful login, generate a random opaque token, store
-# {token: expiry} in platform_store (durable across redeploys/restarts, same store everything
-# else in the app already uses), and set it as a browser cookie valid 24h. On every page load,
-# before showing the password form, check for that cookie and validate it against the stored
-# token/expiry - if valid, skip straight past the login screen.
-import secrets as _secrets_mod
-import time as _time_mod
-import platform_store as _platform_store
-_AUTH_COOKIE_NAME = "momira_auth_token"
-_AUTH_SESSION_SECONDS = 24 * 60 * 60  # 24 hours, per product-owner request - minimum, not exact
-
-
-def _issue_auth_cookie():
-    token = _secrets_mod.token_urlsafe(32)
-    expires_at = _time_mod.time() + _AUTH_SESSION_SECONDS
-    _platform_store.set("auth_sessions", token, {"expires_at": expires_at})
-    import streamlit.components.v1 as _components
-    _components.html(
-        f"""<script>
-        document.cookie = "{_AUTH_COOKIE_NAME}={token}; max-age={_AUTH_SESSION_SECONDS}; path=/; SameSite=Lax";
-        </script>""",
-        height=0,
-    )
-
-
-def _check_auth_cookie() -> bool:
-    try:
-        token = st.context.cookies.get(_AUTH_COOKIE_NAME)
-    except Exception:
-        token = None
-    if not token:
-        return False
-    record = _platform_store.get("auth_sessions", token)
-    if not record or not isinstance(record, dict):
-        return False
-    if _time_mod.time() > record.get("expires_at", 0):
-        _platform_store.delete("auth_sessions", token)
-        return False
-    return True
-
-
-_APP_PASSWORD = os.environ.get("APP_PASSWORD", "").strip()
-if _APP_PASSWORD and not st.session_state.get("_authenticated"):
-    if _check_auth_cookie():
-        st.session_state["_authenticated"] = True
-    else:
-        st.title("🔒 Momira Travel Platform")
-        entered = st.text_input("Password", type="password", key="_login_password_input")
-        _login_clicked = st.button("Log in", type="primary")
-        if _login_clicked and entered == _APP_PASSWORD:
-            st.session_state["_authenticated"] = True
-            # Deliberately NOT followed by st.rerun(): the cookie-setting script below is
-            # injected via components.html, which needs a moment in the browser to actually
-            # execute. Calling st.rerun() right after it risks tearing down the page before
-            # that happens, so the cookie would silently never get set. Instead we let THIS
-            # same run fall through past the `if not authenticated: st.stop()` check right
-            # below and render the rest of the app in the same response - the cookie script
-            # and the real page both reach the browser together, no race.
-            _issue_auth_cookie()
-        elif _login_clicked:
-            st.error("Incorrect password.")
-
-        if not st.session_state.get("_authenticated"):
-            st.stop()
+# ---- Role-based login gate ---------------------------------------------------------------
+# Two roles: Admin (shared APP_PASSWORD) and Supplier (TC Supplier ID + email, validated
+# against the live TC API). The role determines what features are visible. Persistent login
+# via browser cookie (24h), same as before. See auth.py for implementation.
+from auth import login_gate, is_admin, is_supplier, get_supplier_id, get_supplier_name
+login_gate()
 
 # Slightly larger base font app-wide for readability. Streamlit's own CSS is
 # built almost entirely on rem units, so scaling the ROOT font-size (rather
@@ -1022,7 +951,10 @@ st.markdown(
     unsafe_allow_html=True,
 )
 st.title("Momira Travel Platform")
-st.caption(f"Build version: {BUILD_VERSION} — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+if is_supplier():
+    st.caption(f"Logged in as **{get_supplier_name()}** (Supplier ID: {get_supplier_id()})")
+else:
+    st.caption(f"Build version: {BUILD_VERSION} — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
 
 _stale_modules, _module_import_failures = _module_build_mismatches()
 if _stale_modules:
@@ -1331,6 +1263,7 @@ TRANSPORT_INVENTORY_AUDIT_CHOICE = "Transport inventory audit (check modality co
 # Extended 2026-11-15 from Transport-only to Transport · Ticket · Transfer, each with its
 # own checks (flows/inventory_audit.py). The old constant stays for restored sessions.
 INVENTORY_AUDIT_CHOICE = "Inventory audit"
+FLEXIBLE_SCHEDULE_AUDIT_CHOICE = "Flexible schedule audit"
 PRICE_AUDIT_CHOICE = "Price audit"
 # CONFIRMED PRODUCT-OWNER REQUEST (2026-10-18): merge the two separate image-bulk entry points
 # into one "Bulk-change images" destination under the new Update tool, with Transfer/Transport
@@ -1391,7 +1324,35 @@ if st.session_state.active_tool is not None:
             _reset_to_tool_chooser()
             st.rerun()
 
-# ---- Step 0: the tool chooser itself ----
+# ---- Supplier portal: simplified view for logged-in suppliers ----
+if is_supplier() and st.session_state.active_tool is None:
+    st.subheader("Your Products")
+    st.caption("View and manage your day excursions on the Momira Travel platform.")
+    _sup_id = str(get_supplier_id())
+
+    st.markdown("**Your day excursions**")
+    try:
+        _sup_tickets = client.get_tickets(_sup_id)
+        _sup_ticket_list = _sup_tickets if isinstance(_sup_tickets, list) else _sup_tickets.get("items", [])
+        if _sup_ticket_list:
+            for _t in _sup_ticket_list:
+                _tname = _t.get("commercialName") or _t.get("name") or _t.get("code", "—")
+                _tcode = _t.get("code", "")
+                st.markdown(f"- **{_tname}** (`{_tcode}`)")
+        else:
+            st.info("You have no day excursions yet. Click the button below to create one.")
+    except Exception as _e:
+        st.warning(f"Could not load your day excursions: {_e}")
+    st.write("")
+    if st.button("Create new day excursion", key="sup_new_ticket", type="primary"):
+        st.session_state.active_tool = TOOL_UPLOAD
+        st.session_state.product_type = "Ticket"
+        st.session_state["supplier_id"] = _sup_id
+        st.rerun()
+
+    st.stop()
+
+# ---- Step 0: the tool chooser itself (admin only) ----
 # Each tool is a self-contained card: heading, what it does, and its OWN button
 # directly underneath. Previously the three descriptions sat above a single shared
 # radio + Continue, which put the actual control a long way from the text explaining
@@ -1629,6 +1590,11 @@ if st.session_state.active_tool == TOOL_UPDATE and \
     st.caption("Scan a supplier's live products and flag what looks wrong — expiring "
                "prices, missing prices, wrong end dates. Transport · Ticket · Transfer.")
 
+    if st.button(FLEXIBLE_SCHEDULE_AUDIT_CHOICE, key="bulk_choice_fsa", use_container_width=True):
+        st.session_state.bulk_action = FLEXIBLE_SCHEDULE_AUDIT_CHOICE
+        st.rerun()
+    st.caption("List all transports that have \"Flexible schedule\" ticked — these need to be unticked.")
+
     st.stop()
 
 if st.session_state.active_tool == TOOL_UPDATE and \
@@ -1652,6 +1618,8 @@ if st.session_state.active_tool == TOOL_UPDATE and \
         render_supplement_bulk_flow(client)
     elif _bulk == INVENTORY_AUDIT_CHOICE:
         render_inventory_audit_flow(client)
+    elif _bulk == FLEXIBLE_SCHEDULE_AUDIT_CHOICE:
+        render_flexible_schedule_audit(client)
     st.stop()
 
 if st.session_state.active_tool == TOOL_UPDATE:

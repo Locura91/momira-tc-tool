@@ -1,4 +1,4 @@
-// Momira TC Rollover -- content script v13
+// Momira TC Rollover -- content script v14
 // Runs in world: "MAIN" so PrimeFaces.ab() is accessible when clicking buttons.
 //
 // GOAL: drive the package rollover automatically to the booking SUMMARY, then stop and let
@@ -744,63 +744,79 @@
     return false;
   }
 
+  // Read the price from the confirmed-live summary price element (.summary__total-amount__price)
+  // Falls back to .dev-side-summary-priceShown, then to the generic readSummaryPrices().
+  function readPriceFromSummaryElement() {
+    var el = document.querySelector(".summary__total-amount__price") ||
+             document.querySelector(".dev-side-summary-priceShown");
+    if (el && el.offsetParent !== null) {
+      var text = (el.textContent || "").trim();
+      if (text) {
+        var val = parseFloat(text.replace(/[^\d.,]/g, "").replace(",", "."));
+        if (!isNaN(val) && val > 0) {
+          console.log("[TC Rollover] readPriceFromSummaryElement: " + val + " from " + text);
+          return { perPerson: val, total: null, currency: "EUR", source: "summary-element" };
+        }
+      }
+    }
+    return null;
+  }
+
   function phaseReadPrice() {
     say(scanProgressPrefix() + "Waiting for search to complete for <b>" + DATE + "</b>…");
-    var waitTries = 0;
+    var totalTries = 0;
     var sawLoading = false;
-    var searchDoneTries = 0;
+    var loadingGone = false;
 
-    // Phase 1: wait for loading to START (max 10s), or if it's already done skip ahead
-    var waitForLoading = setInterval(function () {
+    // Single loop: poll every 500ms, max 120s. As soon as loading ends and the price
+    // element has a value, grab it and move on. No separate phases, no settle delays.
+    var iv = setInterval(function () {
       attach();
-      if (isSearchLoading()) {
+      totalTries++;
+
+      var loading = isSearchLoading();
+      if (loading) {
         sawLoading = true;
-        clearInterval(waitForLoading);
-        say(scanProgressPrefix() + "Search running for <b>" + DATE + "</b>… waiting for results.");
-        startWaitForCompletion();
+        loadingGone = false;
+        if (totalTries > 240) { // 120s hard cap
+          clearInterval(iv);
+          console.log("[TC Rollover] Search timed out after 120s");
+          recordAndAdvance({ perPerson: null, total: null, currency: "EUR", source: "timeout" });
+        }
         return;
       }
-      if (++waitTries > 25) { // 10s — if no loading indicator appeared, check for price anyway
-        clearInterval(waitForLoading);
-        console.log("[TC Rollover] No loading indicator detected after 10s, reading price directly");
-        startWaitForCompletion();
-      }
-    }, 400);
 
-    // Phase 2: wait for loading to END, then read the price
-    function startWaitForCompletion() {
-      var completionTries = 0;
-      var iv = setInterval(function () {
-        attach();
-        if (isSearchLoading()) {
-          completionTries = 0; // reset — still loading
-          if (++searchDoneTries > 250) { // ~100s total safety limit
-            clearInterval(iv);
-            console.log("[TC Rollover] Search timed out after 100s");
-            recordAndAdvance({ perPerson: null, total: null, currency: "EUR", source: "timeout" });
-          }
-          return;
-        }
-        // Loading gone — but wait a moment for the DOM to settle
-        if (++completionTries < 5) return; // 2s settle time
-        clearInterval(iv);
-
+      // Loading is not active right now
+      if (sawLoading && !loadingGone) {
+        loadingGone = true;
         say(scanProgressPrefix() + "Search done. Reading price for <b>" + DATE + "</b>…");
-        // Poll for the actual price (it may take a moment to render after loading clears)
-        var priceTries = 0;
-        var priceIv = setInterval(function () {
-          attach();
-          var p = readSummaryPrices();
-          var done = (p.perPerson !== null || p.total !== null);
-          if (!done && ++priceTries < 25) return; // 10s for price to render
-          clearInterval(priceIv);
-          if (!done) recordPrices();
-          recordAndAdvance(p);
-        }, 400);
-      }, 400);
-    }
+      }
 
-    function recordAndAdvance(p) {
+      // Try to read the price (whether we ever saw loading or not)
+      var p = readPriceFromSummaryElement();
+      if (!p) {
+        var generic = readSummaryPrices();
+        if (generic.perPerson !== null || generic.total !== null) p = generic;
+      }
+
+      if (p) {
+        // If we never saw loading, the price might be stale — wait 1 more tick to confirm
+        if (!sawLoading && totalTries < 4) return;
+        clearInterval(iv);
+        recordAndAdvance(p);
+        return;
+      }
+
+      // No price yet — keep trying, but cap at 120s
+      if (totalTries > 240) {
+        clearInterval(iv);
+        recordPrices();
+        recordAndAdvance({ perPerson: null, total: null, currency: "EUR", source: "not found" });
+      }
+    }, 500);
+  }
+
+  function recordAndAdvance(p) {
       state.results = state.results || [];
       state.results.push({
         date: DATE,
@@ -858,14 +874,33 @@
       say("✅ Cheapest is <b>" + best.date + "</b> at <b>" + best.perPerson + " € p.P.</b>" +
           resultsTable() + "<br>Re-quoting that date now…");
       goToIdeaPageForNextDate();
-    }
   }
 
   function phaseSummary() {
+    // Safety net: if an intermediate scan date somehow lands here (e.g. TC navigation quirk),
+    // read the price and advance instead of waiting 32s for a button that doesn't exist.
+    if (state.scan && !state.finalRun) {
+      say(scanProgressPrefix() + "Reading price for <b>" + DATE + "</b>…");
+      var fallbackTries = 0;
+      var fbIv = setInterval(function () {
+        attach();
+        var p = readPriceFromSummaryElement();
+        if (!p) {
+          var generic = readSummaryPrices();
+          if (generic.perPerson !== null || generic.total !== null) p = generic;
+        }
+        if (p) { clearInterval(fbIv); recordAndAdvance(p); return; }
+        if (++fallbackTries >= 50) { // 20s
+          clearInterval(fbIv);
+          recordPrices();
+          recordAndAdvance({ perPerson: null, total: null, currency: "EUR", source: "summary-fallback-timeout" });
+        }
+      }, 400);
+      return;
+    }
+
     say("Reached the summary. Looking for <b>Save &amp; overwrite</b>…");
-    recordButtons(); // log controls for selector mapping
-    // Snapshot the scan's findings before clearState() wipes them, so the final overlay can
-    // still show which date won and what the alternatives cost.
+    recordButtons();
     var scanSummary = state.scan ? resultsTable() : "";
     var wasScan = state.scan;
     waitFor(findSaveOverwriteButton, function (btn) {

@@ -76,26 +76,28 @@ def render_ticket_flow(client):
     # ------------------------------------------------------------------
     # TICKET STEP 2: Action + Supplier
     # ------------------------------------------------------------------
-    st.header("Ticket — Step 2: What do you want to do?")
+
+    # Supplier portal: auto-set supplier ID and default action, skip Step 2 entirely
+    from auth import is_supplier, get_supplier_id, get_supplier_name
+    if is_supplier() and not st.session_state.tk_step1_confirmed:
+        st.session_state.tk_cfg_action = list(TICKET_CREATE_ACTION_KEYS)[0]
+        st.session_state.tk_cfg_supplier_id = str(get_supplier_id())
+        st.session_state.tk_step1_confirmed = True
+
+    st.header("Day Excursion — Create" if is_supplier() else "Ticket — Step 2: What do you want to do?")
 
     if st.session_state.tk_step1_confirmed:
-        st.success(f"✅ Action: **{TICKET_ACTION_LABELS[st.session_state.tk_cfg_action]}** | "
-                   f"Supplier ID: **{st.session_state.tk_cfg_supplier_id}**")
-        if st.button("🔄 Change action / supplier", key="tk_change_action"):
+        if is_supplier():
+            st.success(f"Creating a new day excursion for **{get_supplier_name()}**")
+        else:
+            st.success(f"✅ Action: **{TICKET_ACTION_LABELS[st.session_state.tk_cfg_action]}** | "
+                       f"Supplier ID: **{st.session_state.tk_cfg_supplier_id}**")
+        if not is_supplier() and st.button("🔄 Change action / supplier", key="tk_change_action"):
             st.session_state.tk_step1_confirmed = False
             st.session_state.tk_step2_confirmed = False
-            # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-03): "if I start a new batch for creating
-            # a new service, please allow to change the currency as this can be always vary" -
-            # tk_cfg_currency's lock (below, in Step 3) is meant to stop the currency changing
-            # mid-way through ONE ticket's Modalities, not to survive into an unrelated new
-            # supplier/action picked here. Clearing it lets Step 3 offer a fresh, editable
-            # currency choice for whatever comes next.
             st.session_state.pop("tk_cfg_currency", None)
             st.rerun()
     else:
-        # Create-only here (product owner, 2026-09-10) - this screen is ONLY reached via
-        # "Create a new product -> Ticket". Updating an existing Ticket (single or batch) now
-        # lives exclusively under "Price update to existing Products" - see TICKET_CREATE_ACTION_KEYS.
         action_key = st.radio(
             "Choose one:", list(TICKET_CREATE_ACTION_KEYS),
             format_func=lambda k: TICKET_ACTION_LABELS[k], key="tk_action_radio"
@@ -105,17 +107,11 @@ def render_ticket_flow(client):
                 try:
                     st.session_state.suppliers_cache = client.get_all_suppliers()
                 except Exception as e:
-                    # This is the very first real network call in the flow -
-                    # a transient connection issue here used to crash the
-                    # whole app before the human could even pick a supplier.
                     st.error(f"❌ Couldn't load the supplier list: {friendly_error_message(e)}")
                     st.session_state.suppliers_cache = []
 
         supplier_id_choice = None
         if st.session_state.suppliers_cache:
-            # LOCKED: only "Momira_"-prefixed suppliers may be picked - forces
-            # the human to explicitly choose a real Momira supplier instead of
-            # any other supplier that happens to exist in the account.
             momira_suppliers = momira_active_suppliers(st.session_state.suppliers_cache)
             if not momira_suppliers:
                 st.error("🚫 No suppliers starting with 'Momira_' were found in this account - can't continue. "
