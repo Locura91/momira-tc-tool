@@ -1327,52 +1327,28 @@ if st.session_state.active_tool is not None:
 # ---- Supplier portal: simplified view for logged-in suppliers ----
 if is_supplier() and st.session_state.active_tool is None:
     st.subheader("Your Products")
-    st.caption("View and manage your products on the Momira Travel platform.")
+    st.caption("View and manage your day excursions on the Momira Travel platform.")
     _sup_id = str(get_supplier_id())
 
-    _sup_tab_tickets, _sup_tab_tours = st.tabs(["Day Excursions", "Multi-day Excursions"])
-
-    with _sup_tab_tickets:
-        st.markdown("**Your day excursions (tickets)**")
-        try:
-            _sup_tickets = client.get_tickets(_sup_id)
-            _sup_ticket_list = _sup_tickets if isinstance(_sup_tickets, list) else _sup_tickets.get("items", [])
-            if _sup_ticket_list:
-                for _t in _sup_ticket_list:
-                    _tname = _t.get("commercialName") or _t.get("name") or _t.get("code", "—")
-                    _tcode = _t.get("code", "")
-                    st.markdown(f"- **{_tname}** (`{_tcode}`)")
-            else:
-                st.info("You have no day excursions yet.")
-        except Exception as _e:
-            st.warning(f"Could not load your day excursions: {_e}")
-        st.write("")
-        if st.button("Create new day excursion", key="sup_new_ticket", type="primary"):
-            st.session_state.active_tool = TOOL_UPLOAD
-            st.session_state.product_type = "Ticket"
-            st.session_state["supplier_id"] = _sup_id
-            st.rerun()
-
-    with _sup_tab_tours:
-        st.markdown("**Your multi-day excursions (closed tours)**")
-        try:
-            _sup_tours = client.get_closed_tours(_sup_id)
-            _sup_tour_list = _sup_tours if isinstance(_sup_tours, list) else _sup_tours.get("items", [])
-            if _sup_tour_list:
-                for _ct in _sup_tour_list:
-                    _ctname = _ct.get("commercialName") or _ct.get("name") or _ct.get("code", "—")
-                    _ctcode = _ct.get("code", "")
-                    st.markdown(f"- **{_ctname}** (`{_ctcode}`)")
-            else:
-                st.info("You have no multi-day excursions yet.")
-        except Exception as _e:
-            st.warning(f"Could not load your multi-day excursions: {_e}")
-        st.write("")
-        if st.button("Create new multi-day excursion", key="sup_new_ct", type="primary"):
-            st.session_state.active_tool = TOOL_UPLOAD
-            st.session_state.product_type = "ClosedTour"
-            st.session_state["supplier_id"] = _sup_id
-            st.rerun()
+    st.markdown("**Your day excursions**")
+    try:
+        _sup_tickets = client.get_tickets(_sup_id)
+        _sup_ticket_list = _sup_tickets if isinstance(_sup_tickets, list) else _sup_tickets.get("items", [])
+        if _sup_ticket_list:
+            for _t in _sup_ticket_list:
+                _tname = _t.get("commercialName") or _t.get("name") or _t.get("code", "—")
+                _tcode = _t.get("code", "")
+                st.markdown(f"- **{_tname}** (`{_tcode}`)")
+        else:
+            st.info("You have no day excursions yet. Click the button below to create one.")
+    except Exception as _e:
+        st.warning(f"Could not load your day excursions: {_e}")
+    st.write("")
+    if st.button("Create new day excursion", key="sup_new_ticket", type="primary"):
+        st.session_state.active_tool = TOOL_UPLOAD
+        st.session_state.product_type = "Ticket"
+        st.session_state["supplier_id"] = _sup_id
+        st.rerun()
 
     st.stop()
 
