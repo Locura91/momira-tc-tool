@@ -153,6 +153,10 @@ def login_gate():
             _set_admin_session()
             return
 
+    import pathlib as _pathlib
+    _logo_path = _pathlib.Path(__file__).parent / "static" / "momira-logo.png"
+    if _logo_path.exists():
+        st.image(str(_logo_path), width=250)
     st.title("Momira Travel Platform")
     st.write("")
 
