@@ -46,5 +46,5 @@ def render_price_audit_flow(client):
         render_ticket_price_refresh_flow(client)
 
     elif product_type == "ClosedTour":
-        st.info("ClosedTour price audit is coming soon. For now, check ClosedTour prices "
-                "manually in Travel Compositor.")
+        from flows.closedtour_audit import render_closedtour_audit
+        render_closedtour_audit(client)
