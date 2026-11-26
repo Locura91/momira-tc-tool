@@ -2581,11 +2581,15 @@ if st.session_state.extracted:
     data = st.session_state.extracted
 
     st.header("Step 5 — Review & Edit")
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.subheader("Original Source")
-        render_readonly_source(st.session_state.raw_preview, height=600)
+    _prefilled_from_live = (st.session_state.raw_preview or "").startswith("(No new document")
+    if _prefilled_from_live:
+        st.info("All information is pre-filled from the current live data. Review and edit below if needed.")
+        col2 = st.container()
+    else:
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("Original Source")
+            render_readonly_source(st.session_state.raw_preview, height=600)
 
     with col2:
         if is_option_only:
