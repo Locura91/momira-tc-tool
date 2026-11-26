@@ -1907,6 +1907,7 @@ else:
     provider_code_in = min_pax_in = max_pax_in = currency_in = modality_code_in = existing_tour_code_in = None
     on_request_in = True
     release_days_in = 30
+    _auto_fetch_needed = False
 
     if "existing_tour_code" in needed:
         # CONFIRMED BUG FIX (full-app audit HIGH, 2026-09-01): this widget used to be a one-shot
@@ -1921,39 +1922,13 @@ else:
         # prefill to SEED that key once, the one time something else (a "recheck this code"
         # shortcut elsewhere) actually sets it - never on every render.
         _ct_code_key = "ct_existing_tour_code_in"
+        _auto_fetch_needed = False
         if "prefill_existing_tour_code" in st.session_state:
             _prefill = st.session_state.pop("prefill_existing_tour_code")
             if _prefill:
                 st.session_state[_ct_code_key] = _prefill
-
-        # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-27, verbatim: "human selects the supplier,
-        # then the app shall fetch all closedtours available from theis supplier, and then we
-        # add the new modality"): for add_option specifically, offer a picker built from the
-        # supplier's own live ClosedTour list (get_existing_tour_names - the same call already
-        # used for the duplicate-name check) instead of requiring the human to type/remember a
-        # code. Selecting one seeds the shared text_input's key below (same "set the key before
-        # the widget renders" pattern the prefill logic above already uses), so it still works
-        # as a fallback for manual entry/correction.
-        if action == "add_option":
-            _tour_names, _tour_names_error = get_existing_tour_names(client, supplier_id)
-            if _tour_names_error:
-                st.info(f"ℹ️ Couldn't auto-load this supplier's ClosedTours ({_tour_names_error}) - "
-                        f"type the code directly below instead.")
-            elif _tour_names:
-                _picker_options = ["(select a ClosedTour)"] + [
-                    f"{t['code']} — {t['name']}" for t in _tour_names if t.get("code")
-                ]
-                _picker_choice = st.selectbox(
-                    "Pick the ClosedTour to add this Modality to",
-                    _picker_options, key="ct_add_option_picker",
-                )
-                if _picker_choice != "(select a ClosedTour)":
-                    _picked_code = _picker_choice.split(" — ", 1)[0]
-                    if st.session_state.get(_ct_code_key) != _picked_code:
-                        st.session_state[_ct_code_key] = _picked_code
-                        st.rerun()
-                st.caption(f"**{len(_tour_names)}** ClosedTour(s) found for this supplier - or type/edit "
-                          f"the code directly below if you don't see the one you want.")
+                if not fetched_tour_matches_code(_prefill):
+                    _auto_fetch_needed = True
 
         existing_tour_code_in = st.text_input(
             "Existing Tour Code",
@@ -1975,7 +1950,8 @@ else:
     # skip this fetch entirely. Showing the tour's existing Modality codes here is also useful
     # context when adding a NEW one (avoids picking a code that collides).
     if "existing_tour_code" in needed:
-        if st.button("🔍 Check what's already online for this code", disabled=not existing_tour_code_in):
+        _do_fetch = _auto_fetch_needed and existing_tour_code_in
+        if _do_fetch or st.button("🔍 Check what's already online for this code", disabled=not existing_tour_code_in):
             with st.spinner("Fetching from Travel Compositor..."):
                 fetched, working_code = try_code_variants(
                     lambda c: client.get_closed_tour(supplier_id, c), existing_tour_code_in
@@ -2068,20 +2044,6 @@ else:
                                     st.json(row.get("price", {}))
 
     ct_update_scope_in = "whole_tour"
-    if action == "update_tour":
-        # CONFIRMED PRODUCT-OWNER REQUEST (2026-08-28), identical to Ticket's equivalent
-        # radio: asked up front so a human who only needs a price fix doesn't pay for (or
-        # wait through) the full name/description/cancellation extraction, and so "whole
-        # tour" - which now actually publishes the pricing it extracts, see ACTION_FIELDS'
-        # comment - knows to expect a Modality Code below.
-        st.markdown("##### What do you want to update?")
-        _ct_scope_choice = st.radio(
-            "Update scope", label_visibility="collapsed",
-            options=["Price only (fast, cheaper - skips re-checking name/description/etc.)",
-                    "Whole tour (also re-checks name, description, cancellation policy, etc.)"],
-            key="ct_update_scope_radio",
-        )
-        ct_update_scope_in = "price_only" if _ct_scope_choice.startswith("Price only") else "whole_tour"
 
     if "provider_code" in needed:
         provider_code_in = st.text_input("ClosedTour Code", value="", placeholder="e.g. ASW-1")
