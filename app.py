@@ -1431,12 +1431,6 @@ if st.session_state.active_tool is None:
          "so you always know what needs attention next. Opens directly into the Package "
          "Rollover tool for any package on the list.",
          "Holiday Packages"),
-        (TOOL_CLOSEDTOUR_AUDIT, "tool_btn_ct_audit",
-         "Audit all ClosedTours of a supplier in one go.",
-         "Phase 1: checks basic info (name, nights, times, currency, active status). "
-         "Phase 2: audits every modality's prices -- ordering, rounding, date validity, "
-         "child discounts, missing prices.",
-         "Closed Tours"),
     ]
 
     for _row_cards in [_TOOL_CARDS[i:i+3] for i in range(0, len(_TOOL_CARDS), 3)]:
@@ -1491,12 +1485,6 @@ if st.session_state.active_tool is None:
             st.rerun()
         st.caption("Paste in a booking reference (BNR-XXXX) and check its flight(s) against live "
                   "flight data. v1 test phase — manual lookup only, no cron job yet.")
-    st.stop()
-
-# ---- ClosedTour Audit: standalone top-level tool ----
-if st.session_state.active_tool == TOOL_CLOSEDTOUR_AUDIT:
-    from flows.closedtour_audit import render_closedtour_audit
-    render_closedtour_audit(client)
     st.stop()
 
 # ---- Outreach tool: hand straight off, it has no product-type step ----

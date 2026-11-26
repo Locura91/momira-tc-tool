@@ -241,9 +241,9 @@ TICKET_ACTION_FIELDS = {
 
 ACTION_LABELS = {
     "create": "1: Create new ClosedTour + 1 Modality",
-    "add_option": "2: Add new Modality to existing ClosedTour",
-    "update_tour": "3: Update an existing ClosedTour",
-    "update_option": "4: Update existing ClosedTour Modality",
+    "add_option": "Add a new price season / option",
+    "update_tour": "Review & update tour information",
+    "update_option": "Review & update prices",
 }
 
 
@@ -4075,7 +4075,7 @@ def _render_update_refresh_coded_service(client, service):
     manual_entry = not ordered_items
     chosen_code = ""
     if not manual_entry:
-        options = {f"{it['code']} — {it['name']}" + (" ⭐ recently used" if it["code"] in recent_codes else ""): it
+        options = {f"{it['name']} — {it['code']}" + (" ⭐ recently used" if it["code"] in recent_codes else ""): it
                    for it in ordered_items}
         option_labels = list(options.keys())
         default_index = 0
