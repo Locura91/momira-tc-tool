@@ -1251,6 +1251,7 @@ def get_existing_tour_names(client, supplier_id):
     accidental duplicate uploads (e.g. re-running the same document twice).
     Cached per-supplier in session_state for the rest of the session (cleared
     on demand via the "Refresh" control next to the duplicate-name warning).
+    Also persisted to platform_store so the list survives when TC is unreachable.
     Returns (names_list, error_message). error_message is None on success -
     if the API call fails or the response shape isn't recognized, this
     returns ([], "reason") so the caller can skip the check gracefully
@@ -1262,18 +1263,26 @@ def get_existing_tour_names(client, supplier_id):
     if supplier_id in cache:
         return cache[supplier_id]
 
+    _store_key = f"tour_names_{supplier_id}"
+    api_failed = False
+
     try:
         result = client.get_closed_tours(supplier_id, first=0, limit=200)
     except Exception as e:
-        cache[supplier_id] = ([], friendly_error_message(e))
-        return cache[supplier_id]
+        api_failed = True
+        result = None
 
-    if isinstance(result, dict) and "error" in result:
+    if not api_failed and isinstance(result, dict) and "error" in result:
+        api_failed = True
+
+    if api_failed:
+        saved = platform_store.get("closedtour_names_cache", _store_key)
+        if saved and isinstance(saved, list) and saved:
+            cache[supplier_id] = (saved, None)
+            return cache[supplier_id]
         cache[supplier_id] = ([], "couldn't reach Travel Compositor to check existing tours")
         return cache[supplier_id]
 
-    # Normalize whatever shape came back - a bare list, or a dict wrapping
-    # the list under one of a few likely keys - into a flat list of items.
     items = normalize_list_response(result, ("closedTour", "closedTours", "items", "data", "results", "content"))
 
     names = []
@@ -1284,6 +1293,7 @@ def get_existing_tour_names(client, supplier_id):
     if not items and not names:
         cache[supplier_id] = ([], "no existing tours found (or couldn't recognize the response format)")
     else:
+        platform_store.set("closedtour_names_cache", _store_key, names)
         cache[supplier_id] = (names, None)
     return cache[supplier_id]
 
