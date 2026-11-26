@@ -2636,19 +2636,32 @@ if st.session_state.extracted:
 
             render_child_age_band(data, "ct")
 
-            dest_rows = [{"#": i + 1, "Destination": d} for i, d in enumerate(data.get("itinerary_destinations", []))]
-            dest_df = pd.DataFrame(dest_rows) if dest_rows else pd.DataFrame(columns=["#", "Destination"])
+            _dest_codes = data.get("itinerary_destinations", [])
+            _dest_name_cache = st.session_state.setdefault("_dest_name_cache", {})
+            for _dc in _dest_codes:
+                if _dc and _dc not in _dest_name_cache:
+                    try:
+                        _r = client.resolve_destination(_dc)
+                        _dest_name_cache[_dc] = _r.get("name") or ""
+                    except Exception:
+                        _dest_name_cache[_dc] = ""
+            dest_rows = [{"#": i + 1, "Destination Code": d, "Destination Name": _dest_name_cache.get(d, "")}
+                         for i, d in enumerate(_dest_codes)]
+            dest_df = pd.DataFrame(dest_rows) if dest_rows else pd.DataFrame(columns=["#", "Destination Code", "Destination Name"])
 
             def _save_destinations(edited_df):
                 data["itinerary_destinations"] = [
-                    str(row.get("Destination") or "").strip() for _, row in edited_df.iterrows()
-                    if _safe_cell_str(row.get("Destination")).strip()
+                    str(row.get("Destination Code") or "").strip() for _, row in edited_df.iterrows()
+                    if _safe_cell_str(row.get("Destination Code")).strip()
                 ]
 
             editable_table(
                 "Itinerary destinations (in visit order)", dest_df, "destinations",
                 on_save=_save_destinations,
-                column_config={"#": st.column_config.NumberColumn(disabled=True, default=0)}
+                column_config={
+                    "#": st.column_config.NumberColumn(disabled=True, default=0),
+                    "Destination Name": st.column_config.TextColumn(disabled=True),
+                }
             )
 
             if "images_text_value" not in st.session_state:
@@ -2733,231 +2746,237 @@ if st.session_state.extracted:
 
             render_closable_image_section(True, "🖼️ Or search free stock photos (Pixabay)", "pixabay_closed", _ct_add_pixabay)
 
-    st.subheader("Departure Schedule")
-    if data.get("schedule_notes"):
-        st.info(f"🔎 AI detected this note about departure timing in the source: \"{data['schedule_notes']}\" "
-                f"— use this to help set Operational Days and Stop Sales below correctly. "
-                f"This is NOT applied automatically - please verify and set the fields yourself.")
+    _hide_modality_sections = action == "update_tour" and not is_option_only
+    if _hide_modality_sections:
+        st.info("Departure schedule and pricing belong to individual modalities. "
+                "After saving the tour information above, use the modality review to update prices and schedules.")
 
-    data["operational_days"] = st.multiselect(
-        "Operational Days (which weekdays this tour can depart on)",
-        ALL_WEEKDAYS,
-        default=data.get("operational_days", ALL_WEEKDAYS)
-    )
+    if not _hide_modality_sections:
+        st.subheader("Departure Schedule")
+        if data.get("schedule_notes"):
+            st.info(f"🔎 AI detected this note about departure timing in the source: \"{data['schedule_notes']}\" "
+                    f"— use this to help set Operational Days and Stop Sales below correctly. "
+                    f"This is NOT applied automatically - please verify and set the fields yourself.")
 
-    render_stop_sales_editor(
-        data, "ct_single",
-        help_text="For tours that ONLY depart on specific dates (e.g. once a month), set Operational Days "
-                  "above to the relevant weekday, then add Stop Sales rows here to block every date EXCEPT "
-                  "the ones you want to allow."
-    )
-
-    # Clear at-a-glance summary of what kind of schedule this actually is.
-    num_days = len(data.get("operational_days", []))
-    num_stop_sales = len(data.get("stop_sales", []))
-    if num_days == 0:
-        schedule_summary = ("⚠️ No Operational Days selected", "#f8d7da", "#721c24")
-    elif num_days == 7 and num_stop_sales == 0:
-        schedule_summary = ("🟢 DAILY departure - runs every day", "#d4edda", "#155724")
-    elif num_stop_sales > 0:
-        schedule_summary = (
-            f"🟠 SPECIFIC DATE departure - runs on {num_days} weekday(s) MINUS {num_stop_sales} "
-            f"blocked date range(s) (irregular/custom schedule)", "#fff3cd", "#856404"
+        data["operational_days"] = st.multiselect(
+            "Operational Days (which weekdays this tour can depart on)",
+            ALL_WEEKDAYS,
+            default=data.get("operational_days", ALL_WEEKDAYS)
         )
-    else:
-        schedule_summary = (
-            f"🔵 WEEKLY departure - runs every {', '.join(data.get('operational_days', []))}",
-            "#d1ecf1", "#0c5460"
+
+        render_stop_sales_editor(
+            data, "ct_single",
+            help_text="For tours that ONLY depart on specific dates (e.g. once a month), set Operational Days "
+                      "above to the relevant weekday, then add Stop Sales rows here to block every date EXCEPT "
+                      "the ones you want to allow."
         )
-    label, bg, fg = schedule_summary
-    st.markdown(
-        f"<div style='background-color:{bg}; color:{fg}; padding:10px 14px; border-radius:4px; "
-        f"font-weight:bold; margin-bottom:10px;'>{label}</div>",
-        unsafe_allow_html=True
-    )
 
-    st.subheader("Pricing (required by Travel Compositor to publish)")
-    if data.get("pricing_notes"):
-        st.warning(f"⚠️ **Pricing had to be approximated to fit the 4-slot Distribution schema:**\n\n"
-                  f"{data['pricing_notes']}\n\n"
-                  f"Review the priceList below carefully - some information may have been "
-                  f"simplified or dropped.")
-
-    default_price_list = sorted(
-        coerce_price_list_shape(data.get("price_list"), currency)[0] or [{
-            "name": "Example row - edit or delete",
-            "startDate": "2027-01-01",
-            "endDate": "2027-12-31",
-            "price": {
-                "singlePrice": {"amount": 0, "currency": currency},
-                "doublePrice": {"amount": 0, "currency": currency}
-            }
-        }],
-        key=lambda entry: entry.get("startDate", "")   # SORT ON ISO, never the display form: "03/12" would sort before "28/01"
-    )
-
-    # CONFIRMED PRODUCT-OWNER BUG (2026-09-27, verbatim: "if multiple modalities are within the
-    # same dates the modalities are added up, which in this example makes the closedtour way too
-    # expensive"): a genuinely NESTED season (e.g. a higher "Peak season" rate fully inside a
-    # longer base-season row) extracted as two overlapping price_list rows on this SAME table
-    # gets ADDED TOGETHER by Travel Compositor for the overlapping dates, silently inflating the
-    # price - exactly the shape the 2026-09-18 fix (fix_touching_season_boundaries/
-    # split_nested_price_list_seasons) already solves for flows/multi_tour.py's multi-Modality
-    # create screen, but this single-Modality price table never applied either fix. Applied here
-    # too, with one difference: flows/multi_tour.py spins the nested window off into a brand-new
-    # Modality; this screen edits ONE Modality directly, so the carved-out nested row is kept
-    # right here as an extra non-overlapping row instead - matching the same-day house rule that
-    # a different price for a different time period is never a separate Modality, it's additional
-    # dated rows in the SAME price table (see MODALITY_DETECTION_PROMPT).
-    default_price_list = fix_touching_season_boundaries(default_price_list)
-    _ct_carved, _ct_nested_rows, _ct_nest_unhandled = split_nested_price_list_seasons(default_price_list)
-    if _ct_nested_rows:
-        default_price_list = sorted(_ct_carved + _ct_nested_rows, key=lambda entry: entry.get("startDate", ""))
-        st.info(
-            f"ℹ️ Found {len(_ct_nested_rows)} nested season row(s) sitting fully inside a longer "
-            f"date range below - split into non-overlapping rows automatically so Travel "
-            f"Compositor doesn't add both prices together for the overlapping dates. Review the "
-            f"rows below."
+        # Clear at-a-glance summary of what kind of schedule this actually is.
+        num_days = len(data.get("operational_days", []))
+        num_stop_sales = len(data.get("stop_sales", []))
+        if num_days == 0:
+            schedule_summary = ("⚠️ No Operational Days selected", "#f8d7da", "#721c24")
+        elif num_days == 7 and num_stop_sales == 0:
+            schedule_summary = ("🟢 DAILY departure - runs every day", "#d4edda", "#155724")
+        elif num_stop_sales > 0:
+            schedule_summary = (
+                f"🟠 SPECIFIC DATE departure - runs on {num_days} weekday(s) MINUS {num_stop_sales} "
+                f"blocked date range(s) (irregular/custom schedule)", "#fff3cd", "#856404"
+            )
+        else:
+            schedule_summary = (
+                f"🔵 WEEKLY departure - runs every {', '.join(data.get('operational_days', []))}",
+                "#d1ecf1", "#0c5460"
+            )
+        label, bg, fg = schedule_summary
+        st.markdown(
+            f"<div style='background-color:{bg}; color:{fg}; padding:10px 14px; border-radius:4px; "
+            f"font-weight:bold; margin-bottom:10px;'>{label}</div>",
+            unsafe_allow_html=True
         )
-    for _ct_note in _ct_nest_unhandled:
-        st.warning(f"⚠️ {_ct_note} — this is nested more than one level deep, so it wasn't "
-                  f"auto-split. Please fix the overlapping dates manually below.")
 
-    data["price_list"] = default_price_list
+        st.subheader("Pricing (required by Travel Compositor to publish)")
+        if data.get("pricing_notes"):
+            st.warning(f"⚠️ **Pricing had to be approximated to fit the 4-slot Distribution schema:**\n\n"
+                      f"{data['pricing_notes']}\n\n"
+                      f"Review the priceList below carefully - some information may have been "
+                      f"simplified or dropped.")
 
-    price_df_rows = []
-    for entry in default_price_list:
-        price = entry.get("price") if isinstance(entry.get("price"), dict) else {}
-        def _amt(key, price=price):
-            block = price.get(key)
-            if isinstance(block, dict):
-                block = block.get("amount")
-            try:
-                return float(block) if block not in (None, "") else None
-            except (TypeError, ValueError):
-                return None
-        price_df_rows.append({
-            "Name": entry.get("name", ""),
-            "Start Date": _disp(entry.get("startDate", "")),
-            "End Date": _disp(entry.get("endDate", "")),
-            "Single": _amt("singlePrice"),
-            "Double": _amt("doublePrice"),
-            "Triple": _amt("triplePrice"),
-            "Quadruple": _amt("quadruplePrice"),
-        })
-
-    st.caption(f"Prices below are in **{currency or '(set Currency in Step 3)'}**. "
-              f"Leave a price blank if that occupancy isn't offered. Add/remove rows freely.")
-    def _row_to_price_entry(row):
-        price = {}
-        for col, key in [("Single", "singlePrice"), ("Double", "doublePrice"),
-                         ("Triple", "triplePrice"), ("Quadruple", "quadruplePrice")]:
-            val = row.get(col)
-            if val is not None and not pd.isna(val):
-                price[key] = {"amount": float(val), "currency": currency}
-        entry = {
-            "startDate": _iso(_safe_cell_str(row.get("Start Date"))),
-            "endDate": _iso(_safe_cell_str(row.get("End Date"))),
-            "price": price
-        }
-        name = _safe_cell_str(row.get("Name")).strip()
-        if name:
-            entry["name"] = name
-        return entry
-
-    def _save_price_list(edited_df):
-        data["price_list"] = sorted(
-            [
-                _row_to_price_entry(row) for _, row in edited_df.iterrows()
-                if _iso(_safe_cell_str(row.get("Start Date"))) and _iso(_safe_cell_str(row.get("End Date")))
-            ],
+        default_price_list = sorted(
+            coerce_price_list_shape(data.get("price_list"), currency)[0] or [{
+                "name": "Example row - edit or delete",
+                "startDate": "2027-01-01",
+                "endDate": "2027-12-31",
+                "price": {
+                    "singlePrice": {"amount": 0, "currency": currency},
+                    "doublePrice": {"amount": 0, "currency": currency}
+                }
+            }],
             key=lambda entry: entry.get("startDate", "")   # SORT ON ISO, never the display form: "03/12" would sort before "28/01"
         )
 
-    price_df = pd.DataFrame(price_df_rows)
-    render_price_adjustment_control(data, "pricing", currency)
-    editable_table("Pricing table", price_df, "pricing", on_save=_save_price_list)
-    render_extra_child_notice(data, "ct_single")
-    render_child_discount_editor(data, "ct_single", currency)
+        # CONFIRMED PRODUCT-OWNER BUG (2026-09-27, verbatim: "if multiple modalities are within the
+        # same dates the modalities are added up, which in this example makes the closedtour way too
+        # expensive"): a genuinely NESTED season (e.g. a higher "Peak season" rate fully inside a
+        # longer base-season row) extracted as two overlapping price_list rows on this SAME table
+        # gets ADDED TOGETHER by Travel Compositor for the overlapping dates, silently inflating the
+        # price - exactly the shape the 2026-09-18 fix (fix_touching_season_boundaries/
+        # split_nested_price_list_seasons) already solves for flows/multi_tour.py's multi-Modality
+        # create screen, but this single-Modality price table never applied either fix. Applied here
+        # too, with one difference: flows/multi_tour.py spins the nested window off into a brand-new
+        # Modality; this screen edits ONE Modality directly, so the carved-out nested row is kept
+        # right here as an extra non-overlapping row instead - matching the same-day house rule that
+        # a different price for a different time period is never a separate Modality, it's additional
+        # dated rows in the SAME price table (see MODALITY_DETECTION_PROMPT).
+        default_price_list = fix_touching_season_boundaries(default_price_list)
+        _ct_carved, _ct_nested_rows, _ct_nest_unhandled = split_nested_price_list_seasons(default_price_list)
+        if _ct_nested_rows:
+            default_price_list = sorted(_ct_carved + _ct_nested_rows, key=lambda entry: entry.get("startDate", ""))
+            st.info(
+                f"ℹ️ Found {len(_ct_nested_rows)} nested season row(s) sitting fully inside a longer "
+                f"date range below - split into non-overlapping rows automatically so Travel "
+                f"Compositor doesn't add both prices together for the overlapping dates. Review the "
+                f"rows below."
+            )
+        for _ct_note in _ct_nest_unhandled:
+            st.warning(f"⚠️ {_ct_note} — this is nested more than one level deep, so it wasn't "
+                      f"auto-split. Please fix the overlapping dates manually below.")
 
-    price_list_valid = len(data["price_list"]) > 0
-    if not price_list_valid:
-        st.error("Add at least one price row with both a Start Date and End Date.")
+        data["price_list"] = default_price_list
 
-    # Detect overlapping date ranges - Travel Compositor ADDS prices together
-    # for any rows with overlapping dates within one option, silently inflating
-    # the total. Catch this here regardless of whether it came from AI
-    # extraction or a manual edit to the table.
-    def _dates_overlap(a_start, a_end, b_start, b_end):
-        return a_start <= b_end and b_start <= a_end
+        price_df_rows = []
+        for entry in default_price_list:
+            price = entry.get("price") if isinstance(entry.get("price"), dict) else {}
+            def _amt(key, price=price):
+                block = price.get(key)
+                if isinstance(block, dict):
+                    block = block.get("amount")
+                try:
+                    return float(block) if block not in (None, "") else None
+                except (TypeError, ValueError):
+                    return None
+            price_df_rows.append({
+                "Name": entry.get("name", ""),
+                "Start Date": _disp(entry.get("startDate", "")),
+                "End Date": _disp(entry.get("endDate", "")),
+                "Single": _amt("singlePrice"),
+                "Double": _amt("doublePrice"),
+                "Triple": _amt("triplePrice"),
+                "Quadruple": _amt("quadruplePrice"),
+            })
 
-    overlaps_found = []
-    for i in range(len(data["price_list"])):
-        for j in range(i + 1, len(data["price_list"])):
-            r1, r2 = data["price_list"][i], data["price_list"][j]
-            if _dates_overlap(r1.get("startDate", ""), r1.get("endDate", ""), r2.get("startDate", ""), r2.get("endDate", "")):
-                overlaps_found.append((i, j))
+        st.caption(f"Prices below are in **{currency or '(set Currency in Step 3)'}**. "
+                  f"Leave a price blank if that occupancy isn't offered. Add/remove rows freely.")
+        def _row_to_price_entry(row):
+            price = {}
+            for col, key in [("Single", "singlePrice"), ("Double", "doublePrice"),
+                             ("Triple", "triplePrice"), ("Quadruple", "quadruplePrice")]:
+                val = row.get(col)
+                if val is not None and not pd.isna(val):
+                    price[key] = {"amount": float(val), "currency": currency}
+            entry = {
+                "startDate": _iso(_safe_cell_str(row.get("Start Date"))),
+                "endDate": _iso(_safe_cell_str(row.get("End Date"))),
+                "price": price
+            }
+            name = _safe_cell_str(row.get("Name")).strip()
+            if name:
+                entry["name"] = name
+            return entry
 
-    if overlaps_found:
-        price_list_valid = False
-        st.error(
-            f"🚫 **Overlapping date ranges detected in {len(overlaps_found)} row pair(s) of the pricing "
-            f"table above.** Travel Compositor ADDS TOGETHER prices from rows with overlapping dates "
-            f"within one Modality - this would silently create a wrong, inflated price. Each date range "
-            f"in the table should be unique/non-overlapping. If you meant to set different prices for "
-            f"different occupancy (single/double/triple/quadruple) in the SAME period, that all belongs "
-            f"in ONE row, not separate rows."
-        )
+        def _save_price_list(edited_df):
+            data["price_list"] = sorted(
+                [
+                    _row_to_price_entry(row) for _, row in edited_df.iterrows()
+                    if _iso(_safe_cell_str(row.get("Start Date"))) and _iso(_safe_cell_str(row.get("End Date")))
+                ],
+                key=lambda entry: entry.get("startDate", "")   # SORT ON ISO, never the display form: "03/12" would sort before "28/01"
+            )
 
-    with st.expander("🔧 Advanced: view raw priceList JSON (for reference/copying)"):
-        st.json(data["price_list"])
+        price_df = pd.DataFrame(price_df_rows)
+        render_price_adjustment_control(data, "pricing", currency)
+        editable_table("Pricing table", price_df, "pricing", on_save=_save_price_list)
+        render_extra_child_notice(data, "ct_single")
+        render_child_discount_editor(data, "ct_single", currency)
 
-    if action == "create":
-        st.subheader("➕ Add more Modalities to create right away (optional)")
-        st.caption("Add more room/cabin/product types now - all get created together with a SINGLE "
-                  "deactivation at the end, so you don't need to manually reactivate the tour in Travel "
-                  "Compositor between each one.")
-        if "extra_modalities" not in st.session_state:
-            st.session_state.extra_modalities = []
+        price_list_valid = len(data["price_list"]) > 0
+        if not price_list_valid:
+            st.error("Add at least one price row with both a Start Date and End Date.")
 
-        for i, mod in enumerate(st.session_state.extra_modalities):
-            st.markdown(f"**Modality {i + 2}**")
-            mcol1, mcol2, mcol3 = st.columns([2, 2, 1])
-            with mcol1:
-                mod["code"] = st.text_input("Modality Code", value=mod["code"], key=f"extramod_code_{i}")
-            with mcol2:
-                mod["hint"] = st.text_input("Focus Hint (e.g. 'Deluxe Cabin')", value=mod["hint"], key=f"extramod_hint_{i}")
-            with mcol3:
-                st.write("")
-                if st.button("🗑️ Remove", key=f"extramod_remove_{i}"):
-                    st.session_state.extra_modalities.pop(i)
-                    # CONFIRMED REAL BUG (internal audit): every widget here is
-                    # keyed off this positional slot i (e.g. f"extramod_code_{i}")
-                    # - removing one shifts every later extra modality down one
-                    # slot, so the item now AT that slot would otherwise inherit
-                    # the removed item's stale typed Code/Hint/prices (Streamlit
-                    # widgets with a fixed key ignore value= after first render).
-                    # Also sweep SHARED_WIDGET_STATE_PREFIXES since each modality's
-                    # pricing below is a render_seasonal_price_editor -> editable_table,
-                    # whose own internal open/closed-edit-mode state is keyed off
-                    # those generic prefixes, not "extramod_" itself.
-                    _clear_batch_widget_state(["extramod_"] + SHARED_WIDGET_STATE_PREFIXES)
-                    st.rerun()
+        # Detect overlapping date ranges - Travel Compositor ADDS prices together
+        # for any rows with overlapping dates within one option, silently inflating
+        # the total. Catch this here regardless of whether it came from AI
+        # extraction or a manual edit to the table.
+        def _dates_overlap(a_start, a_end, b_start, b_end):
+            return a_start <= b_end and b_start <= a_end
 
-            if st.button(f"🔎 Extract pricing focused on '{mod['hint'] or mod['code'] or 'this modality'}'", key=f"extramod_extract_{i}", disabled=not mod["code"]):
-                with st.spinner("Extracting..."):
-                    mod["data"] = extract_option_only_data(st.session_state.raw_preview, human_hint=mod["hint"])
-                    st.rerun()
+        overlaps_found = []
+        for i in range(len(data["price_list"])):
+            for j in range(i + 1, len(data["price_list"])):
+                r1, r2 = data["price_list"][i], data["price_list"][j]
+                if _dates_overlap(r1.get("startDate", ""), r1.get("endDate", ""), r2.get("startDate", ""), r2.get("endDate", "")):
+                    overlaps_found.append((i, j))
 
-            if mod["data"]:
-                render_seasonal_price_editor(f"Pricing - {mod['code'] or f'Modality {i + 2}'}", mod["data"], f"extramod_pricing_{i}", currency)
-            else:
-                st.info("Click 'Extract pricing' above to get started for this modality.")
-            st.divider()
+        if overlaps_found:
+            price_list_valid = False
+            st.error(
+                f"🚫 **Overlapping date ranges detected in {len(overlaps_found)} row pair(s) of the pricing "
+                f"table above.** Travel Compositor ADDS TOGETHER prices from rows with overlapping dates "
+                f"within one Modality - this would silently create a wrong, inflated price. Each date range "
+                f"in the table should be unique/non-overlapping. If you meant to set different prices for "
+                f"different occupancy (single/double/triple/quadruple) in the SAME period, that all belongs "
+                f"in ONE row, not separate rows."
+            )
 
-        if st.button("➕ Add another Modality"):
-            st.session_state.extra_modalities.append({"code": "", "hint": "", "data": None})
-            st.rerun()
+        with st.expander("🔧 Advanced: view raw priceList JSON (for reference/copying)"):
+            st.json(data["price_list"])
+
+        if action == "create":
+            st.subheader("➕ Add more Modalities to create right away (optional)")
+            st.caption("Add more room/cabin/product types now - all get created together with a SINGLE "
+                      "deactivation at the end, so you don't need to manually reactivate the tour in Travel "
+                      "Compositor between each one.")
+            if "extra_modalities" not in st.session_state:
+                st.session_state.extra_modalities = []
+
+            for i, mod in enumerate(st.session_state.extra_modalities):
+                st.markdown(f"**Modality {i + 2}**")
+                mcol1, mcol2, mcol3 = st.columns([2, 2, 1])
+                with mcol1:
+                    mod["code"] = st.text_input("Modality Code", value=mod["code"], key=f"extramod_code_{i}")
+                with mcol2:
+                    mod["hint"] = st.text_input("Focus Hint (e.g. 'Deluxe Cabin')", value=mod["hint"], key=f"extramod_hint_{i}")
+                with mcol3:
+                    st.write("")
+                    if st.button("🗑️ Remove", key=f"extramod_remove_{i}"):
+                        st.session_state.extra_modalities.pop(i)
+                        # CONFIRMED REAL BUG (internal audit): every widget here is
+                        # keyed off this positional slot i (e.g. f"extramod_code_{i}")
+                        # - removing one shifts every later extra modality down one
+                        # slot, so the item now AT that slot would otherwise inherit
+                        # the removed item's stale typed Code/Hint/prices (Streamlit
+                        # widgets with a fixed key ignore value= after first render).
+                        # Also sweep SHARED_WIDGET_STATE_PREFIXES since each modality's
+                        # pricing below is a render_seasonal_price_editor -> editable_table,
+                        # whose own internal open/closed-edit-mode state is keyed off
+                        # those generic prefixes, not "extramod_" itself.
+                        _clear_batch_widget_state(["extramod_"] + SHARED_WIDGET_STATE_PREFIXES)
+                        st.rerun()
+
+                if st.button(f"🔎 Extract pricing focused on '{mod['hint'] or mod['code'] or 'this modality'}'", key=f"extramod_extract_{i}", disabled=not mod["code"]):
+                    with st.spinner("Extracting..."):
+                        mod["data"] = extract_option_only_data(st.session_state.raw_preview, human_hint=mod["hint"])
+                        st.rerun()
+
+                if mod["data"]:
+                    render_seasonal_price_editor(f"Pricing - {mod['code'] or f'Modality {i + 2}'}", mod["data"], f"extramod_pricing_{i}", currency)
+                else:
+                    st.info("Click 'Extract pricing' above to get started for this modality.")
+                st.divider()
+
+            if st.button("➕ Add another Modality"):
+                st.session_state.extra_modalities.append({"code": "", "hint": "", "data": None})
+                st.rerun()
 
     if not is_option_only:
         st.subheader("Optional Add-ons / Upgrades / Excursions (Supplements)")
