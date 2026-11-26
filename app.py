@@ -943,38 +943,51 @@ def _module_build_mismatches():
     return stale, import_failures
 
 
-st.markdown(
-    '<a href="/" target="_self" style="display:inline-flex;align-items:center;gap:.35rem;'
-    'font-size:.85rem;font-weight:600;color:#17a39b;text-decoration:none;'
-    'background:#f0fdfc;border:1px solid #99e6e0;border-radius:6px;padding:.3rem .75rem;'
-    'margin-bottom:.5rem">← Home</a>',
-    unsafe_allow_html=True,
-)
-st.title("Momira Travel Platform")
 if is_supplier():
-    st.caption(f"Logged in as **{get_supplier_name()}** (Supplier ID: {get_supplier_id()})")
+    import pathlib as _pathlib
+    _logo_path = _pathlib.Path(__file__).parent / "static" / "momira-logo.png"
+    if _logo_path.exists():
+        st.image(str(_logo_path), width=250)
+    else:
+        st.markdown('<h1 style="color:#17a39b;font-weight:700;">Momira Travel</h1>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div style="background:linear-gradient(135deg,#f0fdfc,#e6f9f7);'
+        f'border:1px solid #c8f0ec;border-radius:12px;padding:1.2rem 1.5rem;'
+        f'margin:0.5rem 0 1.5rem 0">'
+        f'<h2 style="font-size:1.3rem;font-weight:600;color:#0d7d76;margin:0 0 .3rem 0">'
+        f'Welcome, {get_supplier_name()}</h2>'
+        f'<p style="font-size:.95rem;color:#555;margin:0">'
+        f'Manage your day excursions and add new products to the Momira Travel platform.</p></div>',
+        unsafe_allow_html=True,
+    )
 else:
-    st.caption(f"Build version: {BUILD_VERSION} — bump this string whenever new code is shared, so it's always obvious whether a deploy actually took effect.")
+    st.markdown(
+        '<a href="/" target="_self" style="display:inline-flex;align-items:center;gap:.35rem;'
+        'font-size:.85rem;font-weight:600;color:#17a39b;text-decoration:none;'
+        'background:#f0fdfc;border:1px solid #99e6e0;border-radius:6px;padding:.3rem .75rem;'
+        'margin-bottom:.5rem">&#8592; Home</a>',
+        unsafe_allow_html=True,
+    )
+    st.title("Momira Travel Platform")
+    st.caption(f"Build version: {BUILD_VERSION} -- bump this string whenever new code is shared, so it is always obvious whether a deploy actually took effect.")
 
-_stale_modules, _module_import_failures = _module_build_mismatches()
-if _stale_modules:
-    with st.expander(f"⚠️ Partial deploy — {len(_stale_modules)} file(s) on the server are from an older build", expanded=False):
-        st.warning(
-            "Errors from these files will point at the wrong lines, because the traceback is "
-            "drawn against whatever is on disk now.\n\n"
-            + "\n".join(f"- `{name}.py` is from **{found}**, but app.py is **{BUILD_VERSION}**"
-                        for name, found in _stale_modules)
-            + "\n\nIn GitHub Desktop, check that **every** changed file is ticked before committing, "
-              "then push and let the app redeploy.")
-if _module_import_failures:
-    # CONFIRMED BUG FIX (full-app audit MEDIUM, 2026-09-01): see _module_build_mismatches'
-    # docstring - a module that fails to import can't be build-checked at all, which used to be
-    # silently indistinguishable from "everything's fine."
-    st.error(
-        "🚨 **Some modules failed to import and could not be build-checked:**\n\n"
-        + "\n".join(f"- `{name}.py`: {err}" for name, err in _module_import_failures)
-        + "\n\nThis usually means a partial/broken deploy too - fix the import error above before "
-          "trusting anything this module is used for.")
+if is_admin():
+    _stale_modules, _module_import_failures = _module_build_mismatches()
+    if _stale_modules:
+        with st.expander(f"⚠️ Partial deploy -- {len(_stale_modules)} file(s) on the server are from an older build", expanded=False):
+            st.warning(
+                "Errors from these files will point at the wrong lines, because the traceback is "
+                "drawn against whatever is on disk now.\n\n"
+                + "\n".join(f"- `{name}.py` is from **{found}**, but app.py is **{BUILD_VERSION}**"
+                            for name, found in _stale_modules)
+                + "\n\nIn GitHub Desktop, check that **every** changed file is ticked before committing, "
+                  "then push and let the app redeploy.")
+    if _module_import_failures:
+        st.error(
+            "Some modules failed to import and could not be build-checked:\n\n"
+            + "\n".join(f"- `{name}.py`: {err}" for name, err in _module_import_failures)
+            + "\n\nThis usually means a partial/broken deploy too - fix the import error above before "
+              "trusting anything this module is used for.")
 
 # (The Elephant Hills stop-sale reader's health notice used to sit here, at the top of every
 # screen. CONFIRMED PRODUCT-OWNER REQUEST (2026-10-07): it does not need to be present on every
@@ -984,20 +997,14 @@ if _module_import_failures:
 # A document that yielded almost no readable text - a screenshot or a scan. Said here, on every
 # screen, because the symptom otherwise looks like the AI being stupid rather than the AI having
 # been handed a blank page. See document_reader.scanned_document_warning.
-for _scan_msg in st.session_state.get("_scanned_doc_warnings", []) or []:
-    st.error("🖼️ " + _scan_msg)
-st.session_state["_scanned_doc_warnings"] = []
+if is_admin():
+    for _scan_msg in st.session_state.get("_scanned_doc_warnings", []) or []:
+        st.error(_scan_msg)
+    st.session_state["_scanned_doc_warnings"] = []
 
-st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
+    st.caption("Every publish respects the confirmed active/inactive workflow. Human verification and final activation still happen inside Travel Compositor.")
 
-# CONFIRMED PRODUCT-OWNER REQUEST: "the integrated AI tool will ask me once a week, if it needs
-# clarification. So we can constantly improve the included databank information."
-#
-# Every question is derived from what the platform has actually observed in its own memory - a
-# correction typed on several suppliers, or one typed many times - never invented to fill the
-# slot. If it has observed nothing, it says nothing, which is what keeps the weekly prompt worth
-# reading on the week it does have something.
-if weekly_review.is_due():
+if is_admin() and weekly_review.is_due():
     _review_questions = weekly_review.pending_questions()
     if not _review_questions:
         weekly_review.mark_reviewed()          # nothing to ask; quietly reset the clock
@@ -1035,7 +1042,7 @@ if weekly_review.is_due():
 # banner here and as an email (product owner confirmed both channels, 2026-09-08). Same "no real
 # background cron on Streamlit Cloud" solution as weekly_review.py just above - checked
 # opportunistically on page load rather than on an actual schedule.
-if price_validity.is_due():
+if is_admin() and price_validity.is_due():
     with st.spinner("Checking price-validity dates on live services..."):
         if st.session_state.suppliers_cache is None:
             try:
@@ -1064,95 +1071,87 @@ if price_validity.is_due():
             else:
                 st.caption(f"Also emailed to {price_validity.alert_recipient()}.")
 
-# Say out loud when nothing is being remembered between runs. Without this the platform
-# looks identical either way: it silently re-translates content already paid for and
-# forgets route matches a human confirmed, with no symptom an operator would notice.
-#
-# This asks platform_store.health(), which does a real write-and-read-back against the
-# database - NOT is_durable(), which only checks that a DATABASE_URL exists. The
-# difference matters: a wrong password, a paused project or an IPv6-only connection
-# string all satisfy is_durable() and then fail silently on every read. Those are the
-# realistic misconfigurations, so they get their own loud red state rather than being
-# indistinguishable from success.
-_storage = platform_store.health()
-if _storage["ok"] and _storage["durable"]:
-    st.caption(f"💾 Memory: {_storage['detail']} — connection verified.")
-elif _storage["mode"] == "postgres":
-    st.error(
-        "🚨 **`DATABASE_URL` is set, but the database is not answering — so nothing is being "
-        "remembered.** This is the dangerous case: the setting looks correct, and the platform "
-        "keeps working, but every translation will be paid for again and every confirmed route "
-        "match will be lost.\n\n"
-        f"The database said:\n\n`{_storage['error']}`\n\n"
-        "Usual causes: a wrong database password; the `[YOUR-PASSWORD]` placeholder or its "
-        "square brackets left in the string; a password containing `@ : / ? # %` that needs "
-        "percent-encoding; the *Direct connection* string used instead of the *Session pooler* "
-        "one (direct is IPv6-only and unreachable from here); or a paused Supabase project."
-    )
-else:
-    st.warning(
-        "⚠️ **Nothing is being remembered between restarts.** No `DATABASE_URL` is configured, "
-        "so what has already been translated and which routes map to which Travel Compositor id "
-        "sit in a local file this host wipes on every redeploy. In practice that means paying to "
-        "translate the same content again, and re-confirming route matches. Add a `DATABASE_URL` "
-        "(any hosted Postgres) to fix it."
-    )
-    if _storage["error"]:
-        st.caption(f"Detail: {_storage['error']}")
-
-with st.expander("💾 What the platform remembers", expanded=False):
-    st.caption(f"Storage: {_storage['detail']}")
-    if st.button("🔌 Test the database connection now", key="storage_health_btn"):
-        _fresh = platform_store.health(force=True)
-        if _fresh["ok"] and _fresh["durable"]:
-            st.success(f"Connected. Wrote a row and read it back from {_fresh['detail']}.")
-        elif _fresh["mode"] == "local":
-            st.warning("Running on a local file — nothing here survives a redeploy.")
-        else:
-            st.error(f"Could not reach the database: {_fresh['error']}")
-    _counts = platform_store.stats()
-    if _counts:
-        # Namespace names are internal; say what each one actually means to an operator.
-        _labels = {
-            "translation_state": "translated entities tracked",
-            "transfer_matches": "confirmed transfer route matches",
-            "transport_matches": "confirmed transport route matches",
-            "standing_notes": "standing supplier notes",
-            "hotel_matches": "confirmed hotel matches",
-            "extraction_memory": "suppliers with learned corrections",
-        }
-        for _ns, _n in sorted(_counts.items()):
-            st.write(f"- **{_n}** {_labels.get(_ns, _ns)}")
+if is_admin():
+    # Say out loud when nothing is being remembered between runs.
+    _storage = platform_store.health()
+    if _storage["ok"] and _storage["durable"]:
+        st.caption(f"💾 Memory: {_storage['detail']} — connection verified.")
+    elif _storage["mode"] == "postgres":
+        st.error(
+            "🚨 **`DATABASE_URL` is set, but the database is not answering — so nothing is being "
+            "remembered.** This is the dangerous case: the setting looks correct, and the platform "
+            "keeps working, but every translation will be paid for again and every confirmed route "
+            "match will be lost.\n\n"
+            f"The database said:\n\n`{_storage['error']}`\n\n"
+            "Usual causes: a wrong database password; the `[YOUR-PASSWORD]` placeholder or its "
+            "square brackets left in the string; a password containing `@ : / ? # %` that needs "
+            "percent-encoding; the *Direct connection* string used instead of the *Session pooler* "
+            "one (direct is IPv6-only and unreachable from here); or a paused Supabase project."
+        )
     else:
-        st.caption("Nothing stored yet. This fills up as you correct documents, translate "
-                   "and confirm route matches.")
+        st.warning(
+            "⚠️ **Nothing is being remembered between restarts.** No `DATABASE_URL` is configured, "
+            "so what has already been translated and which routes map to which Travel Compositor id "
+            "sit in a local file this host wipes on every redeploy. In practice that means paying to "
+            "translate the same content again, and re-confirming route matches. Add a `DATABASE_URL` "
+            "(any hosted Postgres) to fix it."
+        )
+        if _storage["error"]:
+            st.caption(f"Detail: {_storage['error']}")
 
-    # Everything learned from corrections, with a delete button on each. A learning system
-    # nobody can inspect or overrule is one you have to take on trust; this is the page that
-    # makes it answerable instead.
-    st.markdown("---")
-    st.markdown("##### 🧠 What it has learned from your corrections")
-    extraction_memory.render_memory_panel()
-    _instr = extraction_memory.list_all_instructions()
-    if _instr:
-        st.markdown("##### 💬 What it has learned from “Tell AI what to fix”")
-        st.caption("Instructions you typed while reviewing, now given to the AI before it reads "
-                  "the next document from that supplier. The document always wins over these.")
-        for _row in _instr:
-            _c1, _c2 = st.columns([6, 1])
-            with _c1:
-                _times = int(_row.get("count", 0))
-                st.markdown(f"**{_row['product_type']} · supplier {_row['supplier_id']}** — "
-                            f"{_row['text']}" + (f"  ·  *said {_times}×*" if _times > 1 else ""))
-                if _row.get("fields"):
-                    st.caption("changed: " + ", ".join(f"`{f}`" for f in _row["fields"]))
-            with _c2:
-                import hashlib as _hl
-                _wkey = f"em_fi_{_row['supplier_id']}_{_row['product_type']}_{_hl.md5(_row['key'].encode()).hexdigest()[:10]}"
-                if st.button("🗑️", key=_wkey, help="Forget this"):
-                    extraction_memory.forget_instruction(_row["supplier_id"], _row["product_type"],
-                                                         _row["key"])
-                    st.rerun()
+    with st.expander("💾 What the platform remembers", expanded=False):
+        st.caption(f"Storage: {_storage['detail']}")
+        if st.button("🔌 Test the database connection now", key="storage_health_btn"):
+            _fresh = platform_store.health(force=True)
+            if _fresh["ok"] and _fresh["durable"]:
+                st.success(f"Connected. Wrote a row and read it back from {_fresh['detail']}.")
+            elif _fresh["mode"] == "local":
+                st.warning("Running on a local file — nothing here survives a redeploy.")
+            else:
+                st.error(f"Could not reach the database: {_fresh['error']}")
+        _counts = platform_store.stats()
+        if _counts:
+            # Namespace names are internal; say what each one actually means to an operator.
+            _labels = {
+                "translation_state": "translated entities tracked",
+                "transfer_matches": "confirmed transfer route matches",
+                "transport_matches": "confirmed transport route matches",
+                "standing_notes": "standing supplier notes",
+                "hotel_matches": "confirmed hotel matches",
+                "extraction_memory": "suppliers with learned corrections",
+            }
+            for _ns, _n in sorted(_counts.items()):
+                st.write(f"- **{_n}** {_labels.get(_ns, _ns)}")
+        else:
+            st.caption("Nothing stored yet. This fills up as you correct documents, translate "
+                       "and confirm route matches.")
+
+        # Everything learned from corrections, with a delete button on each. A learning system
+        # nobody can inspect or overrule is one you have to take on trust; this is the page that
+        # makes it answerable instead.
+        st.markdown("---")
+        st.markdown("##### 🧠 What it has learned from your corrections")
+        extraction_memory.render_memory_panel()
+        _instr = extraction_memory.list_all_instructions()
+        if _instr:
+            st.markdown("##### 💬 What it has learned from “Tell AI what to fix”")
+            st.caption("Instructions you typed while reviewing, now given to the AI before it reads "
+                      "the next document from that supplier. The document always wins over these.")
+            for _row in _instr:
+                _c1, _c2 = st.columns([6, 1])
+                with _c1:
+                    _times = int(_row.get("count", 0))
+                    st.markdown(f"**{_row['product_type']} · supplier {_row['supplier_id']}** — "
+                                f"{_row['text']}" + (f"  ·  *said {_times}×*" if _times > 1 else ""))
+                    if _row.get("fields"):
+                        st.caption("changed: " + ", ".join(f"`{f}`" for f in _row["fields"]))
+                with _c2:
+                    import hashlib as _hl
+                    _wkey = f"em_fi_{_row['supplier_id']}_{_row['product_type']}_{_hl.md5(_row['key'].encode()).hexdigest()[:10]}"
+                    if st.button("🗑️", key=_wkey, help="Forget this"):
+                        extraction_memory.forget_instruction(_row["supplier_id"], _row["product_type"],
+                                                             _row["key"])
+                        st.rerun()
 
 
 # ======================================================================
@@ -1326,25 +1325,57 @@ if st.session_state.active_tool is not None:
 
 # ---- Supplier portal: simplified view for logged-in suppliers ----
 if is_supplier() and st.session_state.active_tool is None:
-    st.subheader("Your Products")
-    st.caption("View and manage your day excursions on the Momira Travel platform.")
     _sup_id = str(get_supplier_id())
 
-    st.markdown("**Your day excursions**")
+    st.markdown(
+        '<style>'
+        '.sup-card{background:#fff;border:1px solid #e2e8f0;border-radius:10px;'
+        'padding:1rem 1.2rem;margin-bottom:.6rem;display:flex;align-items:center;gap:.8rem}'
+        '.sup-card:hover{box-shadow:0 2px 8px rgba(0,0,0,.08)}'
+        '.sup-icon{width:42px;height:42px;border-radius:8px;background:#f0fdfc;'
+        'display:flex;align-items:center;justify-content:center;font-size:1.3rem;flex-shrink:0}'
+        '.sup-name{font-weight:600;color:#1a202c;font-size:.95rem}'
+        '.sup-code{font-size:.8rem;color:#718096}'
+        '.sup-cta{background:linear-gradient(135deg,#17a39b,#0d7d76);border-radius:12px;'
+        'padding:1.5rem;margin:1.5rem 0 1rem;text-align:center;color:#fff}'
+        '.sup-cta h3{color:#fff;margin:0 0 .3rem;font-size:1.15rem}'
+        '.sup-cta p{color:rgba(255,255,255,.85);margin:0;font-size:.9rem}'
+        '</style>',
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("#### Your day excursions")
     try:
         _sup_tickets = client.get_tickets(_sup_id)
         _sup_ticket_list = _sup_tickets if isinstance(_sup_tickets, list) else _sup_tickets.get("items", [])
         if _sup_ticket_list:
             for _t in _sup_ticket_list:
-                _tname = _t.get("commercialName") or _t.get("name") or _t.get("code", "—")
+                _tname = _t.get("commercialName") or _t.get("name") or _t.get("code", "---")
                 _tcode = _t.get("code", "")
-                st.markdown(f"- **{_tname}** (`{_tcode}`)")
+                st.markdown(
+                    f'<div class="sup-card">'
+                    f'<div class="sup-icon">&#127915;</div>'
+                    f'<div><div class="sup-name">{_tname}</div>'
+                    f'<div class="sup-code">{_tcode}</div></div></div>',
+                    unsafe_allow_html=True,
+                )
         else:
-            st.info("You have no day excursions yet. Click the button below to create one.")
+            st.markdown(
+                '<div style="text-align:center;padding:2rem;color:#718096">'
+                '<div style="font-size:2.5rem;margin-bottom:.5rem">&#127915;</div>'
+                '<p>You have no day excursions yet.<br>Create your first one below!</p></div>',
+                unsafe_allow_html=True,
+            )
     except Exception as _e:
         st.warning(f"Could not load your day excursions: {_e}")
-    st.write("")
-    if st.button("Create new day excursion", key="sup_new_ticket", type="primary"):
+
+    st.markdown(
+        '<div class="sup-cta">'
+        '<h3>Add a new day excursion</h3>'
+        '<p>Upload your product details and start selling on Momira Travel</p></div>',
+        unsafe_allow_html=True,
+    )
+    if st.button("Create new day excursion", key="sup_new_ticket", type="primary", use_container_width=True):
         st.session_state.active_tool = TOOL_UPLOAD
         st.session_state.product_type = "Ticket"
         st.session_state["supplier_id"] = _sup_id
