@@ -1741,6 +1741,7 @@ def _map_fetched_supplements(fetched_supplements):
     human's own eyes.
     """
     mapped = []
+    seen_names = set()
     for s in (fetched_supplements or []):
         if not isinstance(s, dict):
             continue
@@ -1763,6 +1764,11 @@ def _map_fetched_supplements(fetched_supplements):
         double_price = price.get("doublePrice", flat_price)
         triple_price = price.get("triplePrice", flat_price)
         quadruple_price = price.get("quadruplePrice", flat_price)
+        norm_key = _norm_supplement_name(name)
+        if norm_key and norm_key in seen_names:
+            continue
+        if norm_key:
+            seen_names.add(norm_key)
         mapped.append({
             "name": name,
             "price": flat_price,

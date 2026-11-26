@@ -894,7 +894,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-11-26-unified-ct"
+BUILD_VERSION = "2026-11-26-review-cleanup"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -2088,7 +2088,8 @@ else:
         modality_code_in = st.text_input(label, value=default_modality or "", placeholder="e.g. Standard Cruise")
     if "on_request" in needed:
         on_request_in = st.checkbox("On Request", value=True)
-    if "release_days" in needed:
+    _in_review_mode = (st.session_state.raw_preview or "").startswith("(No new document")
+    if "release_days" in needed and not _in_review_mode:
         release_days_in = st.number_input(
             "Release Day (days before departure this tour becomes bookable)",
             min_value=0, value=30,
@@ -2663,87 +2664,78 @@ if st.session_state.extracted:
                 }
             )
 
-            if "images_text_value" not in st.session_state:
-                st.session_state.images_text_value = "\n".join(data.get("image_urls", []))
-            if st.session_state.get("_pending_images_update") is not None:
-                st.session_state.images_text_value = st.session_state._pending_images_update
-                st.session_state._pending_images_update = None
-
-            images_text = st.text_area(
-                "Image URLs (one per line - images found on the page/URL or in your document(s) "
-                "are added automatically; edit or delete a line to change what's used)",
-                key="images_text_value",
-                height=80
+            _img_count = len([u for u in data.get("image_urls", []) if u and u != FALLBACK_IMAGE])
+            _img_expander_label = (
+                f"🖼️ Add additional photos ({_img_count} existing)" if _prefilled_from_live
+                else "🖼️ Images"
             )
-            data["image_urls"] = [u.strip() for u in images_text.split("\n") if u.strip()] or [FALLBACK_IMAGE]
-            if data["image_urls"] == [FALLBACK_IMAGE]:
-                st.caption(f"⚠️ No real images provided - using placeholder ({FALLBACK_IMAGE}).")
-            elif st.session_state.get("hosted_image_candidates"):
-                # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-23) - see the docstring above where
-                # hosted_image_candidates is merged into image_urls: this used to be a manual
-                # tick-and-"Add selected" picker (render_url_image_picker); now it folds straight
-                # into image_urls with no click needed to keep any of them.
-                #
-                # CONFIRMED PRODUCT-OWNER FOLLOW-UP (2026-09-25, verbatim: "3 image(s) found in
-                # your document/page were added automatically. --> human must verify the images
-                # as many images are not good or just logos and therefore is human interaction
-                # needed"): a plain confirmation caption gave no way to actually SEE what got
-                # added - render_auto_added_image_review shows a thumbnail per auto-added image,
-                # pre-checked (no click needed to keep any of them, preserving the 2026-09-23
-                # fix), so unchecking a bad one (a logo, low quality, unrelated) is the only
-                # action needed. Unchecked ones are dropped from image_urls the same way
-                # _ct_add_doc_image below adds one - via _pending_images_update, so the text area
-                # above stays the single source of truth.
-                _reviewed = render_auto_added_image_review(st.session_state.hosted_image_candidates, "ct_auto_img")
-                _unchecked = [u for u in st.session_state.hosted_image_candidates if u not in _reviewed]
-                if _unchecked:
-                    _filtered = [u for u in data.get("image_urls", []) if u not in _unchecked]
-                    if _filtered != data.get("image_urls", []):
-                        data["image_urls"] = _filtered or [FALLBACK_IMAGE]
-                        st.session_state._pending_images_update = "\n".join(_filtered)
-                        st.rerun()
+            with st.expander(_img_expander_label, expanded=not _prefilled_from_live):
+                if "images_text_value" not in st.session_state:
+                    st.session_state.images_text_value = "\n".join(data.get("image_urls", []))
+                if st.session_state.get("_pending_images_update") is not None:
+                    st.session_state.images_text_value = st.session_state._pending_images_update
+                    st.session_state._pending_images_update = None
 
-            def _ct_add_doc_image():
-                added = render_doc_image_picker(st.session_state.doc_raw_images, "doc_images")
-                if added:
-                    current = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
-                    new_list = current + [added]
-                    data["image_urls"] = new_list
-                    st.session_state._pending_images_update = "\n".join(new_list)
-                    return 1
-                return 0
+                images_text = st.text_area(
+                    "Image URLs (one per line - images found on the page/URL or in your document(s) "
+                    "are added automatically; edit or delete a line to change what's used)",
+                    key="images_text_value",
+                    height=80
+                )
+                data["image_urls"] = [u.strip() for u in images_text.split("\n") if u.strip()] or [FALLBACK_IMAGE]
+                if data["image_urls"] == [FALLBACK_IMAGE]:
+                    st.caption(f"⚠️ No real images provided - using placeholder ({FALLBACK_IMAGE}).")
+                elif st.session_state.get("hosted_image_candidates"):
+                    _reviewed = render_auto_added_image_review(st.session_state.hosted_image_candidates, "ct_auto_img")
+                    _unchecked = [u for u in st.session_state.hosted_image_candidates if u not in _reviewed]
+                    if _unchecked:
+                        _filtered = [u for u in data.get("image_urls", []) if u not in _unchecked]
+                        if _filtered != data.get("image_urls", []):
+                            data["image_urls"] = _filtered or [FALLBACK_IMAGE]
+                            st.session_state._pending_images_update = "\n".join(_filtered)
+                            st.rerun()
 
-            render_closable_image_section(
-                bool(st.session_state.get("doc_raw_images")),
-                f"📥 Images extracted from your document(s) ({len(st.session_state.get('doc_raw_images') or [])}) - need hosting",
-                "doc_images_closed", _ct_add_doc_image
-            )
+                def _ct_add_doc_image():
+                    added = render_doc_image_picker(st.session_state.doc_raw_images, "doc_images")
+                    if added:
+                        current = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
+                        new_list = current + [added]
+                        data["image_urls"] = new_list
+                        st.session_state._pending_images_update = "\n".join(new_list)
+                        return 1
+                    return 0
 
-            default_img_query = data.get("tour_name", "") or (data.get("itinerary_destinations")[0] if data.get("itinerary_destinations") else "")
+                render_closable_image_section(
+                    bool(st.session_state.get("doc_raw_images")),
+                    f"📥 Images extracted from your document(s) ({len(st.session_state.get('doc_raw_images') or [])}) - need hosting",
+                    "doc_images_closed", _ct_add_doc_image
+                )
 
-            def _ct_add_pexels():
-                selected = render_stock_photo_picker("Pexels", search_images, default_img_query, "pexels")
-                if selected:
-                    current = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
-                    new_list = current + selected
-                    data["image_urls"] = new_list
-                    st.session_state._pending_images_update = "\n".join(new_list)
-                    return len(selected)
-                return 0
+                default_img_query = data.get("tour_name", "") or (data.get("itinerary_destinations")[0] if data.get("itinerary_destinations") else "")
 
-            render_closable_image_section(True, "🖼️ Or search free stock photos (Pexels)", "pexels_closed", _ct_add_pexels)
+                def _ct_add_pexels():
+                    selected = render_stock_photo_picker("Pexels", search_images, default_img_query, "pexels")
+                    if selected:
+                        current = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
+                        new_list = current + selected
+                        data["image_urls"] = new_list
+                        st.session_state._pending_images_update = "\n".join(new_list)
+                        return len(selected)
+                    return 0
 
-            def _ct_add_pixabay():
-                selected = render_stock_photo_picker("Pixabay", search_images_pixabay, default_img_query, "pixabay")
-                if selected:
-                    current = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
-                    new_list = current + selected
-                    data["image_urls"] = new_list
-                    st.session_state._pending_images_update = "\n".join(new_list)
-                    return len(selected)
-                return 0
+                render_closable_image_section(True, "🖼️ Or search free stock photos (Pexels)", "pexels_closed", _ct_add_pexels)
 
-            render_closable_image_section(True, "🖼️ Or search free stock photos (Pixabay)", "pixabay_closed", _ct_add_pixabay)
+                def _ct_add_pixabay():
+                    selected = render_stock_photo_picker("Pixabay", search_images_pixabay, default_img_query, "pixabay")
+                    if selected:
+                        current = [u for u in data.get("image_urls", []) if u != FALLBACK_IMAGE]
+                        new_list = current + selected
+                        data["image_urls"] = new_list
+                        st.session_state._pending_images_update = "\n".join(new_list)
+                        return len(selected)
+                    return 0
+
+                render_closable_image_section(True, "🖼️ Or search free stock photos (Pixabay)", "pixabay_closed", _ct_add_pixabay)
 
     _hide_modality_sections = action == "update_tour" and not is_option_only
     price_list_valid = True
@@ -2977,17 +2969,15 @@ if st.session_state.extracted:
 
     if not is_option_only:
         st.subheader("Optional Add-ons / Upgrades / Excursions (Supplements)")
-        st.caption("TRUE optional extras the customer only pays for if they choose them - e.g. a hotel/room "
-                  "upgrade, a meal upgrade, or an optional excursion day. Leave empty if this tour has none. "
-                  "For a genuinely different core product (different cabin/route with its own full pricing), "
-                  "use a separate Modality instead (Publish Action 2).")
-        st.caption("Every row needs a clear Name. Special Travel Date is optional - only set it if this "
-                  "supplement only applies during a specific date range (e.g. a seasonal excursion).")
+        if not _prefilled_from_live:
+            st.caption("TRUE optional extras the customer only pays for if they choose them - e.g. a hotel/room "
+                      "upgrade, a meal upgrade, or an optional excursion day. Leave empty if this tour has none. "
+                      "For a genuinely different core product (different cabin/route with its own full pricing), "
+                      "use a separate Modality instead (Publish Action 2).")
+            st.caption("Every row needs a clear Name. Special Travel Date is optional - only set it if this "
+                      "supplement only applies during a specific date range (e.g. a seasonal excursion).")
         st.caption("⚠️ **Check Mandatory and On Request on every row before publishing.** A ClosedTour "
-                  "supplement is often genuinely optional, so these two boxes are the difference between "
-                  "an add-on the client chooses and a charge they cannot avoid - the AI's guess is a "
-                  "starting point, not a decision. House rule: ClosedTour supplements are never "
-                  "refundable, and the app always publishes them that way.")
+                  "supplement is never refundable, and the app always publishes them that way.")
 
         default_supplements = data.get("supplements") or []
         supp_df_rows = [
@@ -3512,7 +3502,19 @@ if st.session_state.extracted:
                                         render_supplement_zero_price_notes(
                                             {"supplement_zero_price_notes": _new_supplement_notes})
                                         update_payload = dict(old_tour)
-                                        update_payload["supplements"] = (old_tour.get("supplements") or []) + new_vos
+                                        # Merge new supplements over existing, deduplicating by
+                                        # name so re-running add_option doesn't stack duplicates.
+                                        _existing_supp = old_tour.get("supplements") or []
+                                        _existing_names = {
+                                            re.sub(r"\s+", " ", ((s.get("translations") or {}).get("EN") or {}).get("name", "").strip().lower())
+                                            for s in _existing_supp if isinstance(s, dict)
+                                        }
+                                        _deduped_new = [
+                                            v for v in new_vos
+                                            if re.sub(r"\s+", " ", ((v.get("translations") or {}).get("EN") or {}).get("name", "").strip().lower())
+                                            not in _existing_names
+                                        ]
+                                        update_payload["supplements"] = _existing_supp + _deduped_new
                                         update_payload["modalityCodes"] = list(dict.fromkeys(
                                             (old_tour.get("modalityCodes") or []) + [modality_code]
                                         ))
