@@ -759,6 +759,7 @@ from flows.inventory_audit import render_inventory_audit_flow
 from flows.transport_image_bulk import render_transport_image_bulk_flow
 from flows.transport_inventory_audit import render_transport_inventory_audit_flow
 from flows.image_bulk import render_image_bulk_flow
+from flexible_schedule_audit import render_flexible_schedule_audit
 
 
 
@@ -1331,6 +1332,7 @@ TRANSPORT_INVENTORY_AUDIT_CHOICE = "Transport inventory audit (check modality co
 # Extended 2026-11-15 from Transport-only to Transport · Ticket · Transfer, each with its
 # own checks (flows/inventory_audit.py). The old constant stays for restored sessions.
 INVENTORY_AUDIT_CHOICE = "Inventory audit"
+FLEXIBLE_SCHEDULE_AUDIT_CHOICE = "Flexible schedule audit"
 PRICE_AUDIT_CHOICE = "Price audit"
 # CONFIRMED PRODUCT-OWNER REQUEST (2026-10-18): merge the two separate image-bulk entry points
 # into one "Bulk-change images" destination under the new Update tool, with Transfer/Transport
@@ -1629,6 +1631,11 @@ if st.session_state.active_tool == TOOL_UPDATE and \
     st.caption("Scan a supplier's live products and flag what looks wrong — expiring "
                "prices, missing prices, wrong end dates. Transport · Ticket · Transfer.")
 
+    if st.button(FLEXIBLE_SCHEDULE_AUDIT_CHOICE, key="bulk_choice_fsa", use_container_width=True):
+        st.session_state.bulk_action = FLEXIBLE_SCHEDULE_AUDIT_CHOICE
+        st.rerun()
+    st.caption("List all transports that have \"Flexible schedule\" ticked — these need to be unticked.")
+
     st.stop()
 
 if st.session_state.active_tool == TOOL_UPDATE and \
@@ -1652,6 +1659,8 @@ if st.session_state.active_tool == TOOL_UPDATE and \
         render_supplement_bulk_flow(client)
     elif _bulk == INVENTORY_AUDIT_CHOICE:
         render_inventory_audit_flow(client)
+    elif _bulk == FLEXIBLE_SCHEDULE_AUDIT_CHOICE:
+        render_flexible_schedule_audit(client)
     st.stop()
 
 if st.session_state.active_tool == TOOL_UPDATE:
