@@ -1,17 +1,12 @@
 """
 Role-based authentication for Momira Travel Platform.
 
-Two roles, determined automatically at login:
+Unified login form: email + password. The system determines the role automatically:
 
-  Admin   — logs in with the shared APP_PASSWORD.
-            Sees everything: all suppliers, bulk tools, rollover, price refresh, etc.
+  Admin    — email + APP_PASSWORD. Sees everything.
+  Supplier — email + their TC Supplier ID (as "password").
+             Validated against the live TC API. Must exist, email must match, active.
 
-  Supplier — logs in with their TC Supplier ID + email address.
-             Validated against the live TC API (GET /suppliers/{id}).
-             Must exist, email must match, and active must be True.
-             Sees only their own products; can create new tickets/closed tours.
-
-The login form presents two tabs: "Admin" and "Supplier".
 Session state keys set on success:
   _authenticated  = True
   _auth_role      = "admin" | "supplier"
@@ -30,13 +25,13 @@ _AUTH_COOKIE_NAME = "momira_auth_token"
 _AUTH_SESSION_SECONDS = 24 * 60 * 60  # 24 hours
 
 
-def _issue_auth_cookie(role: str, supplier_id: int | None = None):
+def _issue_auth_cookie(role: str, supplier_id: int | None = None,
+                       supplier_email: str | None = None):
     token = _secrets_mod.token_urlsafe(32)
     expires_at = time.time() + _AUTH_SESSION_SECONDS
     record = {"expires_at": expires_at, "role": role}
     if supplier_id is not None:
         record["supplier_id"] = supplier_id
-    supplier_email = st.session_state.get("_supplier_email")
     if supplier_email:
         record["supplier_email"] = supplier_email
     _platform_store.set("auth_sessions", token, record)
@@ -65,17 +60,14 @@ def _check_auth_cookie() -> dict | None:
     return record
 
 
-def _validate_supplier(supplier_id: int, email: str) -> dict | None:
-    """Validate supplier credentials against TC API.
-    Returns the supplier record on success, None on failure."""
+def _validate_supplier_by_id(supplier_id: int, email: str) -> dict | None:
+    """Validate supplier by ID + email against TC API."""
     from api_client import TravelCompositorAPI
     try:
         api = TravelCompositorAPI()
         url = f"{api.api_base_url}/suppliers/{supplier_id}"
         res = api._request("GET", url)
-        if res.status_code == 404:
-            return None
-        if res.status_code != 200:
+        if res.status_code not in (200,):
             return None
         supplier = res.json()
         if not isinstance(supplier, dict):
@@ -83,10 +75,25 @@ def _validate_supplier(supplier_id: int, email: str) -> dict | None:
         if not supplier.get("active", False):
             return None
         tc_email = (supplier.get("email") or "").strip().lower()
-        entered_email = email.strip().lower()
-        if not tc_email or tc_email != entered_email:
+        if not tc_email or tc_email != email.strip().lower():
             return None
         return supplier
+    except Exception:
+        return None
+
+
+def _find_supplier_by_email(email: str) -> dict | None:
+    """Look up an active supplier by email from the full supplier list."""
+    from api_client import TravelCompositorAPI
+    try:
+        api = TravelCompositorAPI()
+        suppliers = api.get_all_suppliers()
+        email_lower = email.strip().lower()
+        for s in suppliers:
+            tc_email = (s.get("email") or "").strip().lower()
+            if tc_email == email_lower and s.get("active", False):
+                return s
+        return None
     except Exception:
         return None
 
@@ -96,7 +103,8 @@ def _set_supplier_session(supplier: dict):
     st.session_state["_auth_role"] = "supplier"
     st.session_state["_supplier_id"] = supplier.get("id")
     st.session_state["_supplier_name"] = (
-        supplier.get("commercialName") or supplier.get("legalName") or f"Supplier {supplier.get('id')}"
+        supplier.get("commercialName") or supplier.get("legalName")
+        or f"Supplier {supplier.get('id')}"
     )
     st.session_state["_supplier_email"] = (supplier.get("email") or "").strip().lower()
 
@@ -123,8 +131,10 @@ def get_supplier_name() -> str | None:
 
 
 def login_gate():
-    """Show the login form and block the app until authenticated.
-    Call this at the top of app.py instead of the old password gate."""
+    """Unified login form: email + password. Role determined automatically.
+    - If password matches APP_PASSWORD → admin
+    - If password is a number and matches a supplier ID for that email → supplier
+    """
     if st.session_state.get("_authenticated"):
         return
 
@@ -135,65 +145,60 @@ def login_gate():
             supplier_id = cookie_record.get("supplier_id")
             supplier_email = cookie_record.get("supplier_email", "")
             if supplier_id and supplier_email:
-                supplier = _validate_supplier(supplier_id, supplier_email)
+                supplier = _validate_supplier_by_id(supplier_id, supplier_email)
                 if supplier:
                     _set_supplier_session(supplier)
                     return
-                # Supplier no longer active/valid — fall through to login
-            # Cookie had supplier role but no ID or validation failed
         else:
             _set_admin_session()
             return
 
     st.title("Momira Travel Platform")
+    st.write("")
 
-    admin_tab, supplier_tab = st.tabs(["Admin", "Supplier"])
+    email = st.text_input("Email", key="_login_email", placeholder="your@email.com")
+    password = st.text_input("Password", type="password", key="_login_password",
+                             placeholder="Your password or Supplier ID")
 
-    with admin_tab:
-        app_password = os.environ.get("APP_PASSWORD", "").strip()
-        if not app_password:
-            st.info("Admin login is not configured (APP_PASSWORD not set).")
+    if st.button("Log in", type="primary", key="_login_btn"):
+        if not email or not password:
+            st.error("Please enter your email and password.")
         else:
-            entered = st.text_input("Password", type="password", key="_admin_password_input")
-            if st.button("Log in as Admin", type="primary", key="_admin_login_btn"):
-                if entered == app_password:
-                    _set_admin_session()
-                    _issue_auth_cookie("admin")
+            app_password = os.environ.get("APP_PASSWORD", "").strip()
+
+            # Try admin login first: password matches APP_PASSWORD
+            if app_password and password == app_password:
+                _set_admin_session()
+                _issue_auth_cookie("admin")
+                return
+
+            # Try supplier login: password is their Supplier ID (a number)
+            try:
+                sid_int = int(password.strip())
+            except ValueError:
+                sid_int = None
+
+            if sid_int is not None:
+                with st.spinner("Verifying your credentials..."):
+                    supplier = _validate_supplier_by_id(sid_int, email)
+                if supplier:
+                    _set_supplier_session(supplier)
+                    _issue_auth_cookie("supplier", supplier_id=sid_int,
+                                       supplier_email=email.strip().lower())
+                    st.success(f"Welcome, {st.session_state['_supplier_name']}!")
+                    return
                 else:
-                    st.error("Incorrect password.")
-
-    with supplier_tab:
-        st.markdown("Log in with your **Supplier ID** and **email address** as registered in the system.")
-        col1, col2 = st.columns(2)
-        with col1:
-            sid = st.text_input("Supplier ID", key="_supplier_id_input", placeholder="e.g. 48940")
-        with col2:
-            semail = st.text_input("Email", key="_supplier_email_input", placeholder="your@email.com")
-
-        if st.button("Log in as Supplier", type="primary", key="_supplier_login_btn"):
-            if not sid or not semail:
-                st.error("Please enter both your Supplier ID and email address.")
+                    st.error(
+                        "Login failed. Please check that your email and credentials "
+                        "are correct and that your account is active.\n\n"
+                        "If you need help, contact Momira Travel."
+                    )
             else:
-                try:
-                    sid_int = int(sid.strip())
-                except ValueError:
-                    st.error("Supplier ID must be a number.")
-                    sid_int = None
-                if sid_int is not None:
-                    with st.spinner("Verifying your credentials..."):
-                        supplier = _validate_supplier(sid_int, semail)
-                    if supplier:
-                        _set_supplier_session(supplier)
-                        _issue_auth_cookie("supplier", supplier_id=sid_int)
-                        st.success(f"Welcome, {st.session_state['_supplier_name']}!")
-                    else:
-                        st.error(
-                            "Login failed. Please check that:\n"
-                            "- Your Supplier ID is correct\n"
-                            "- Your email matches the one registered in the system\n"
-                            "- Your supplier account is active\n\n"
-                            "If you need help, contact Momira Travel."
-                        )
+                st.error(
+                    "Login failed. Please check that your email and credentials "
+                    "are correct.\n\n"
+                    "If you need help, contact Momira Travel."
+                )
 
     if not st.session_state.get("_authenticated"):
         st.stop()
