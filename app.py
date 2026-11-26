@@ -894,7 +894,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-11-26-review-cleanup"
+BUILD_VERSION = "2026-11-26-review-simplified"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -2598,7 +2598,12 @@ if st.session_state.extracted:
                       "entirely - they belong to the existing tour and aren't touched by adding/updating "
                       "a Modality. Scroll down for Departure Schedule and Pricing.")
         else:
-            st.subheader("Extracted Data (click ✏️ to edit each field)")
+            if _prefilled_from_live:
+                st.info("✅ All fields are pre-filled from the live tour. Check the key fields below — "
+                        "if everything looks correct, click **Continue** at the bottom.")
+                st.subheader("Review (click ✏️ to edit if something needs changing)")
+            else:
+                st.subheader("Extracted Data (click ✏️ to edit each field)")
             DEFAULT_MEETING_POINT = ("Meet your guide in the airport arrival hall or, if you are already in the "
                                      "tour's starting city, in your hotel lobby.")
             if not data.get("meeting_point"):
@@ -2637,39 +2642,41 @@ if st.session_state.extracted:
             render_child_age_band(data, "ct")
 
             _dest_codes = data.get("itinerary_destinations", [])
-            _dest_name_cache = st.session_state.setdefault("_dest_name_cache", {})
-            for _dc in _dest_codes:
-                if _dc and _dc not in _dest_name_cache:
-                    try:
-                        _r = client.resolve_destination(_dc)
-                        _dest_name_cache[_dc] = _r.get("name") or ""
-                    except Exception:
-                        _dest_name_cache[_dc] = ""
-            dest_rows = [{"#": i + 1, "Destination Code": d, "Destination Name": _dest_name_cache.get(d, "")}
-                         for i, d in enumerate(_dest_codes)]
-            dest_df = pd.DataFrame(dest_rows) if dest_rows else pd.DataFrame(columns=["#", "Destination Code", "Destination Name"])
+            if _prefilled_from_live:
+                # Review mode: destinations are already correct on TC, show read-only
+                if _dest_codes:
+                    with st.expander(f"🗺️ Itinerary destinations ({len(_dest_codes)} stops) — click to verify", expanded=False):
+                        for i, d in enumerate(_dest_codes, 1):
+                            st.caption(f"{i}. {d}")
+            else:
+                _dest_name_cache = st.session_state.setdefault("_dest_name_cache", {})
+                for _dc in _dest_codes:
+                    if _dc and _dc not in _dest_name_cache:
+                        try:
+                            _r = client.resolve_destination(_dc)
+                            _dest_name_cache[_dc] = _r.get("name") or ""
+                        except Exception:
+                            _dest_name_cache[_dc] = ""
+                dest_rows = [{"#": i + 1, "Destination Code": d, "Destination Name": _dest_name_cache.get(d, "")}
+                             for i, d in enumerate(_dest_codes)]
+                dest_df = pd.DataFrame(dest_rows) if dest_rows else pd.DataFrame(columns=["#", "Destination Code", "Destination Name"])
 
-            def _save_destinations(edited_df):
-                data["itinerary_destinations"] = [
-                    str(row.get("Destination Code") or "").strip() for _, row in edited_df.iterrows()
-                    if _safe_cell_str(row.get("Destination Code")).strip()
-                ]
+                def _save_destinations(edited_df):
+                    data["itinerary_destinations"] = [
+                        str(row.get("Destination Code") or "").strip() for _, row in edited_df.iterrows()
+                        if _safe_cell_str(row.get("Destination Code")).strip()
+                    ]
 
-            editable_table(
-                "Itinerary destinations (in visit order)", dest_df, "destinations",
-                on_save=_save_destinations,
-                column_config={
-                    "#": st.column_config.NumberColumn(disabled=True, default=0),
-                    "Destination Name": st.column_config.TextColumn(disabled=True),
-                }
-            )
+                editable_table(
+                    "Itinerary destinations (in visit order)", dest_df, "destinations",
+                    on_save=_save_destinations,
+                    column_config={
+                        "#": st.column_config.NumberColumn(disabled=True, default=0),
+                        "Destination Name": st.column_config.TextColumn(disabled=True),
+                    }
+                )
 
-            _img_count = len([u for u in data.get("image_urls", []) if u and u != FALLBACK_IMAGE])
-            _img_expander_label = (
-                f"🖼️ Add additional photos ({_img_count} existing)" if _prefilled_from_live
-                else "🖼️ Images"
-            )
-            with st.expander(_img_expander_label, expanded=not _prefilled_from_live):
+            if not _prefilled_from_live:
                 if "images_text_value" not in st.session_state:
                     st.session_state.images_text_value = "\n".join(data.get("image_urls", []))
                 if st.session_state.get("_pending_images_update") is not None:
@@ -2968,63 +2975,69 @@ if st.session_state.extracted:
                 st.rerun()
 
     if not is_option_only:
-        st.subheader("Optional Add-ons / Upgrades / Excursions (Supplements)")
-        if not _prefilled_from_live:
-            st.caption("TRUE optional extras the customer only pays for if they choose them - e.g. a hotel/room "
-                      "upgrade, a meal upgrade, or an optional excursion day. Leave empty if this tour has none. "
-                      "For a genuinely different core product (different cabin/route with its own full pricing), "
-                      "use a separate Modality instead (Publish Action 2).")
-            st.caption("Every row needs a clear Name. Special Travel Date is optional - only set it if this "
-                      "supplement only applies during a specific date range (e.g. a seasonal excursion).")
-        st.caption("⚠️ **Check Mandatory and On Request on every row before publishing.** A ClosedTour "
-                  "supplement is never refundable, and the app always publishes them that way.")
-
         default_supplements = data.get("supplements") or []
-        supp_df_rows = [
-            {
-                "Name": s.get("name", ""),
-                "Price (per person)": s.get("price", 0),
-                "Per Pax": s.get("per_pax", True),
-                "Mandatory": s.get("mandatory", False),
-                "On Request": s.get("on_request", False),
-                "Special Travel Start Date": _disp(s.get("travel_start_date", "")),
-                "Special Travel End Date": _disp(s.get("travel_end_date", "")),
-            }
-            for s in default_supplements
-        ]
-        supp_df = pd.DataFrame(supp_df_rows) if supp_df_rows else pd.DataFrame(
-            columns=["Name", "Price (per person)", "Per Pax", "Mandatory", "On Request",
-                     "Special Travel Start Date", "Special Travel End Date"]
+        _supp_count = len(default_supplements)
+        _supp_header = (
+            f"Optional supplements ({_supp_count}) — click to verify" if _prefilled_from_live and _supp_count
+            else "Optional Add-ons / Upgrades / Excursions (Supplements)"
         )
 
-        def _save_supplements(edited_df):
-            missing_name = False
-            new_supplements = []
-            for _, row in edited_df.iterrows():
-                name = _safe_cell_str(row.get("Name")).strip()
-                price_given = row.get("Price (per person)", 0)
-                price_given_is_blank = price_given is None or (isinstance(price_given, float) and pd.isna(price_given))
-                has_any_data = name or (not price_given_is_blank and price_given not in (0, ""))
-                if not name and has_any_data:
-                    missing_name = True
-                    continue
-                if not name:
-                    continue
-                new_supplements.append({
-                    "name": name,
-                    "price": _safe_float(price_given),
-                    "per_pax": bool(row.get("Per Pax", True)),
-                    "mandatory": bool(row.get("Mandatory", False)),
-                    "on_request": bool(row.get("On Request", False)),
-                    "travel_start_date": _iso(_safe_cell_str(row.get("Special Travel Start Date"))),
-                    "travel_end_date": _iso(_safe_cell_str(row.get("Special Travel End Date"))),
-                })
-            data["supplements"] = new_supplements
-            st.session_state._supplements_missing_name = missing_name
+        with st.expander(_supp_header, expanded=not _prefilled_from_live or not _supp_count):
+            if not _prefilled_from_live:
+                st.caption("TRUE optional extras the customer only pays for if they choose them - e.g. a hotel/room "
+                          "upgrade, a meal upgrade, or an optional excursion day. Leave empty if this tour has none. "
+                          "For a genuinely different core product (different cabin/route with its own full pricing), "
+                          "use a separate Modality instead (Publish Action 2).")
+                st.caption("Every row needs a clear Name. Special Travel Date is optional - only set it if this "
+                          "supplement only applies during a specific date range (e.g. a seasonal excursion).")
+            st.caption("⚠️ **Check Mandatory and On Request on every row before publishing.** A ClosedTour "
+                      "supplement is never refundable, and the app always publishes them that way.")
 
-        editable_table("Supplements", supp_df, "supplements", on_save=_save_supplements)
-        if st.session_state.get("_supplements_missing_name"):
-            st.warning("⚠️ A supplement row has a price but no Name - it was skipped. Every supplement needs a clear Name.")
+            supp_df_rows = [
+                {
+                    "Name": s.get("name", ""),
+                    "Price (per person)": s.get("price", 0),
+                    "Per Pax": s.get("per_pax", True),
+                    "Mandatory": s.get("mandatory", False),
+                    "On Request": s.get("on_request", False),
+                    "Special Travel Start Date": _disp(s.get("travel_start_date", "")),
+                    "Special Travel End Date": _disp(s.get("travel_end_date", "")),
+                }
+                for s in default_supplements
+            ]
+            supp_df = pd.DataFrame(supp_df_rows) if supp_df_rows else pd.DataFrame(
+                columns=["Name", "Price (per person)", "Per Pax", "Mandatory", "On Request",
+                         "Special Travel Start Date", "Special Travel End Date"]
+            )
+
+            def _save_supplements(edited_df):
+                missing_name = False
+                new_supplements = []
+                for _, row in edited_df.iterrows():
+                    name = _safe_cell_str(row.get("Name")).strip()
+                    price_given = row.get("Price (per person)", 0)
+                    price_given_is_blank = price_given is None or (isinstance(price_given, float) and pd.isna(price_given))
+                    has_any_data = name or (not price_given_is_blank and price_given not in (0, ""))
+                    if not name and has_any_data:
+                        missing_name = True
+                        continue
+                    if not name:
+                        continue
+                    new_supplements.append({
+                        "name": name,
+                        "price": _safe_float(price_given),
+                        "per_pax": bool(row.get("Per Pax", True)),
+                        "mandatory": bool(row.get("Mandatory", False)),
+                        "on_request": bool(row.get("On Request", False)),
+                        "travel_start_date": _iso(_safe_cell_str(row.get("Special Travel Start Date"))),
+                        "travel_end_date": _iso(_safe_cell_str(row.get("Special Travel End Date"))),
+                    })
+                data["supplements"] = new_supplements
+                st.session_state._supplements_missing_name = missing_name
+
+            editable_table("Supplements", supp_df, "supplements", on_save=_save_supplements)
+            if st.session_state.get("_supplements_missing_name"):
+                st.warning("⚠️ A supplement row has a price but no Name - it was skipped. Every supplement needs a clear Name.")
 
     # ----------------------------------------------------------------------
     # STEP 6: Build payloads (destination resolution happens here)
