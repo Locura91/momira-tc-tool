@@ -17,7 +17,7 @@ from list_response_utils import normalize_list_response
 MODULE_BUILD = "2026-11-26-closedtour-audit"
 
 _KEY = "cta_"
-_WRAPPER_KEYS = ("items", "data", "results", "content")
+_WRAPPER_KEYS = ("closedTour", "closedTours", "items", "data", "results", "content")
 
 
 # ── Phase 1: basic info ────────────────────────────────────────────────────────
@@ -174,7 +174,7 @@ def render_closedtour_audit(client):
     # Load tours
     with st.spinner("Loading closed tours..."):
         try:
-            raw = client.get_closed_tours(supplier_id)
+            raw = client.get_closed_tours(supplier_id, first=0, limit=200)
         except Exception as e:
             st.error(f"Failed to load closed tours: {e}")
             return
