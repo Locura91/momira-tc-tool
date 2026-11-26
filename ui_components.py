@@ -1663,12 +1663,11 @@ def render_child_age_band(data, key_prefix, min_key="min_child_age", max_key="ma
     with acol2:
         raw_max = data.get(max_key)
         max_default = int(raw_max if raw_max not in (None, "") else 12)
-        clamped_max = max(0, min(max_default, 17))
-        if clamped_max != max_default:
-            st.warning(f"⚠️ Max Child Age was extracted as {max_default}, outside the allowed "
-                       f"0-17 range - clamped to {clamped_max} here. Please check the document.")
+        # House rule: max child age is always 12. TC or a document occasionally returns 13+
+        # but our contracts never go above 12, so cap it here unconditionally.
+        clamped_max = max(0, min(max_default, 12))
         data[max_key] = st.number_input(
-            "Max Child Age", min_value=0, max_value=17,
+            "Max Child Age", min_value=0, max_value=12,
             value=clamped_max, key=f"{key_prefix}_max_child_age")
 
     low, high = data[min_key], data[max_key]
