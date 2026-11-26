@@ -4025,7 +4025,7 @@ def _render_update_refresh_coded_service(client, service):
 
     if service == "ClosedTour":
         existing_items, list_error = get_existing_tour_names(client, supplier_id)
-        kind_key, action_labels = "tour", {k: v for k, v in ACTION_LABELS.items() if k != "create"}
+        kind_key, action_labels = "tour", None
     else:  # Hotel
         existing_items, list_error = get_existing_hotel_names(client, supplier_id)
         kind_key, action_labels = "hotel", None
@@ -4115,7 +4115,7 @@ def _render_update_refresh_coded_service(client, service):
             st.session_state.tk_step2_confirmed = False
             st.session_state.product_type = "Ticket"
         elif service == "ClosedTour":
-            st.session_state.cfg_action = action_key
+            st.session_state.cfg_action = "update_tour"
             st.session_state.cfg_supplier_id = supplier_id
             st.session_state.prefill_existing_tour_code = chosen_code
             st.session_state.cfg_existing_tour_code = chosen_code
