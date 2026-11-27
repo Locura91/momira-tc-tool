@@ -91,6 +91,80 @@ def _bool_fields(d: dict, prefix: str = "") -> list[tuple[str, bool]]:
     return out
 
 
+def _render_single_transport_diagnostic(client):
+    """Fetch one specific transport by ID across all suppliers and show its raw response."""
+    st.markdown("### 🔬 Single Transport Raw Inspection")
+    st.caption(
+        "Fetch a specific transport by ID to see its exact raw API response — "
+        "useful for confirming which field TC uses for 'Flexible schedule'."
+    )
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        t_id = st.text_input(
+            "Transport ID", value="TRANSPORT-412579",
+            key="fsa_diag_id", placeholder="e.g. TRANSPORT-412579"
+        )
+    with col2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        run_diag = st.button("Fetch", key="fsa_diag_run", type="primary")
+
+    if not run_diag or not t_id.strip():
+        return
+
+    t_id = t_id.strip()
+    with st.spinner(f"Searching for {t_id} across all suppliers…"):
+        suppliers = client.get_all_suppliers()
+        found = None
+        found_supplier = None
+        for sup in (suppliers or []):
+            sid = str(sup.get("id", ""))
+            try:
+                raw = client.get_transport(sid, t_id)
+                if isinstance(raw, dict) and raw.get("id") == t_id:
+                    found = raw
+                    found_supplier = sup
+                    break
+            except Exception:
+                continue
+
+    if not found:
+        st.error(f"Could not find `{t_id}` in any supplier. Check the ID and try again.")
+        return
+
+    sname = found_supplier.get("commercialName") or found_supplier.get("legalName") or str(found_supplier.get("id"))
+    st.success(f"Found `{t_id}` under supplier **{sname}** (id: {found_supplier.get('id')})")
+
+    # Show all fields — look for anything that could be "flexible schedule"
+    st.markdown("**All top-level fields:**")
+    top_fields = {k: v for k, v in found.items() if k != "segments"}
+    st.json(top_fields)
+
+    segments = found.get("segments") or []
+    if segments:
+        st.markdown(f"**Segments ({len(segments)}):**")
+        for i, seg in enumerate(segments):
+            st.markdown(f"*Segment {i + 1}:*")
+            st.json(seg)
+
+            # Highlight any field that looks like a time range (earliest/latest)
+            time_fields = {k: v for k, v in seg.items() if "time" in k.lower() or "departure" in k.lower() or "arrival" in k.lower()}
+            if time_fields:
+                st.caption(f"Time-related fields on segment {i + 1}: `{time_fields}`")
+
+    # Specifically flag if any field value looks like "flexible"
+    import json as _json
+    raw_str = _json.dumps(found, default=str).lower()
+    flex_hits = [k for k in found if "flex" in k.lower()]
+    for seg in segments:
+        flex_hits += [f"segment.{k}" for k in seg if "flex" in k.lower()]
+    if flex_hits:
+        st.warning(f"Fields containing 'flex': `{flex_hits}`")
+    else:
+        st.info("No fields containing 'flex' found in the raw response. "
+                "Look at the segment time fields above — a range (earliest + latest) "
+                "vs a single time is likely the flexible-schedule signal.")
+
+
 def render_flexible_schedule_audit(client):
     st.subheader("Transport Audit — Active Transports & Flexible Schedule")
     st.caption(
@@ -99,6 +173,9 @@ def render_flexible_schedule_audit(client):
         "too many route variations for our operations."
     )
     st.caption(f"Module build: `{MODULE_BUILD}`")
+
+    _render_single_transport_diagnostic(client)
+    st.markdown("---")
 
     if st.button("🔍 Scan all transports", type="primary", key="fsa_scan"):
         with st.spinner("Loading suppliers…"):
@@ -295,3 +372,6 @@ def render_flexible_schedule_audit(client):
             if k.startswith("fsa_"):
                 del st.session_state[k]
         st.rerun()
+
+    st.markdown("---")
+    _render_single_transport_diagnostic(client)
