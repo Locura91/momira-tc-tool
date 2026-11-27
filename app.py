@@ -760,6 +760,7 @@ from flows.transport_image_bulk import render_transport_image_bulk_flow
 from flows.transport_inventory_audit import render_transport_inventory_audit_flow
 from flows.image_bulk import render_image_bulk_flow
 from flexible_schedule_audit import render_flexible_schedule_audit
+from flows.transport_segment_model_clear import render_transport_segment_model_clear
 
 
 
@@ -1264,6 +1265,7 @@ TRANSPORT_INVENTORY_AUDIT_CHOICE = "Transport inventory audit (check modality co
 # own checks (flows/inventory_audit.py). The old constant stays for restored sessions.
 INVENTORY_AUDIT_CHOICE = "Inventory audit"
 FLEXIBLE_SCHEDULE_AUDIT_CHOICE = "Flexible schedule audit"
+TRANSPORT_SEGMENT_MODEL_CLEAR_CHOICE = "Clear Transport segment Model field"
 PRICE_AUDIT_CHOICE = "Price audit"
 # CONFIRMED PRODUCT-OWNER REQUEST (2026-10-18): merge the two separate image-bulk entry points
 # into one "Bulk-change images" destination under the new Update tool, with Transfer/Transport
@@ -1627,6 +1629,11 @@ if st.session_state.active_tool == TOOL_UPDATE and \
         st.rerun()
     st.caption("List all transports that have \"Flexible schedule\" ticked — these need to be unticked.")
 
+    if st.button(TRANSPORT_SEGMENT_MODEL_CLEAR_CHOICE, key="bulk_choice_tsmc", use_container_width=True):
+        st.session_state.bulk_action = TRANSPORT_SEGMENT_MODEL_CLEAR_CHOICE
+        st.rerun()
+    st.caption("Find all transport segments with a non-empty Model field (e.g. \"Private\") and clear it.")
+
     st.stop()
 
 if st.session_state.active_tool == TOOL_UPDATE and \
@@ -1652,6 +1659,8 @@ if st.session_state.active_tool == TOOL_UPDATE and \
         render_inventory_audit_flow(client)
     elif _bulk == FLEXIBLE_SCHEDULE_AUDIT_CHOICE:
         render_flexible_schedule_audit(client)
+    elif _bulk == TRANSPORT_SEGMENT_MODEL_CLEAR_CHOICE:
+        render_transport_segment_model_clear(client)
     st.stop()
 
 if st.session_state.active_tool == TOOL_UPDATE:
