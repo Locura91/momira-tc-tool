@@ -761,6 +761,7 @@ from flows.transport_inventory_audit import render_transport_inventory_audit_flo
 from flows.image_bulk import render_image_bulk_flow
 from flexible_schedule_audit import render_flexible_schedule_audit
 from flows.transport_segment_model_clear import render_transport_segment_model_clear
+from flows.combined_supplement_bulk import render_combined_supplement_bulk
 
 
 
@@ -1266,6 +1267,7 @@ TRANSPORT_INVENTORY_AUDIT_CHOICE = "Transport inventory audit (check modality co
 INVENTORY_AUDIT_CHOICE = "Inventory audit"
 FLEXIBLE_SCHEDULE_AUDIT_CHOICE = "Flexible schedule audit"
 TRANSPORT_SEGMENT_MODEL_CLEAR_CHOICE = "Clear Transport segment Model field"
+COMBINED_SUPPLEMENT_BULK_CHOICE = "Bulk Supplements: Transfer + Ticket"
 PRICE_AUDIT_CHOICE = "Price audit"
 # CONFIRMED PRODUCT-OWNER REQUEST (2026-10-18): merge the two separate image-bulk entry points
 # into one "Bulk-change images" destination under the new Update tool, with Transfer/Transport
@@ -1634,6 +1636,12 @@ if st.session_state.active_tool == TOOL_UPDATE and \
         st.rerun()
     st.caption("Find all transport segments with a non-empty Model field (e.g. \"Private\") and clear it.")
 
+    if st.button(COMBINED_SUPPLEMENT_BULK_CHOICE, key="bulk_choice_combined_supp", use_container_width=True):
+        st.session_state.bulk_action = COMBINED_SUPPLEMENT_BULK_CHOICE
+        st.rerun()
+    st.caption("Apply the same supplement(s) to Transfers AND Ticket modalities in one shot. "
+               "PERCENT type is auto-converted for tickets (⌈2-pax price ÷ 2 × %⌉).")
+
     st.stop()
 
 if st.session_state.active_tool == TOOL_UPDATE and \
@@ -1661,6 +1669,8 @@ if st.session_state.active_tool == TOOL_UPDATE and \
         render_flexible_schedule_audit(client)
     elif _bulk == TRANSPORT_SEGMENT_MODEL_CLEAR_CHOICE:
         render_transport_segment_model_clear(client)
+    elif _bulk == COMBINED_SUPPLEMENT_BULK_CHOICE:
+        render_combined_supplement_bulk(client)
     st.stop()
 
 if st.session_state.active_tool == TOOL_UPDATE:
