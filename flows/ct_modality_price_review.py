@@ -20,7 +20,7 @@ def _s(key, default=None):
 
 def _reset():
     for k in list(st.session_state.keys()):
-        if k.startswith("ctpr_"):
+        if k.startswith("ctpr_") or k == "cta_goto_price_review":
             del st.session_state[k]
     st.rerun()
 

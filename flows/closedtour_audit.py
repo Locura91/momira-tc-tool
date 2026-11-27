@@ -4,6 +4,10 @@ flows/closedtour_audit.py — Two-phase ClosedTour audit.
 Phase 1: basic info check (name, nights, times, currency, active status).
 Phase 2: price & modality audit (date validity, price ordering, rounding,
          child discounts, missing/zero prices, operational days).
+
+After the audit, each tour shows a "Review & update prices" button that
+launches the CT Modality Price Review flow (flows/ct_modality_price_review.py)
+pre-filled with the supplier + tour code, skipping Steps 1-2.
 """
 
 import math
@@ -14,7 +18,7 @@ import streamlit as st
 from flows.flow_ui_helpers import load_momira_suppliers as _load_momira_suppliers
 from list_response_utils import normalize_list_response
 
-MODULE_BUILD = "2026-11-26-closedtour-audit"
+MODULE_BUILD = "2026-11-27-closedtour-audit-v2"
 
 _KEY = "cta_"
 _WRAPPER_KEYS = ("closedTour", "closedTours", "items", "data", "results", "content")
@@ -148,6 +152,13 @@ def _audit_option(option: dict, tour_code: str) -> list[str]:
 # ── Streamlit UI ───────────────────────────────────────────────────────────────
 
 def render_closedtour_audit(client):
+    # If the user clicked "Review & update prices" for a specific tour, hand off
+    # to the CT Modality Price Review flow with the state pre-filled.
+    if st.session_state.get(f"{_KEY}goto_price_review"):
+        from flows.ct_modality_price_review import render_ct_modality_price_review
+        render_ct_modality_price_review(client)
+        return
+
     st.subheader("ClosedTour Audit")
     st.caption(
         "Two-phase check: first the basic tour information, "
@@ -327,6 +338,26 @@ def render_closedtour_audit(client):
                 st.markdown("---")
 
             phase2_issues_total += len(tour_issues)
+
+            # ── Jump to price review for this tour ────────────────────────
+            btn_key = f"{_KEY}price_review_{code}"
+            if st.button(f"💶 Review & update prices for **{code}**",
+                         key=btn_key, use_container_width=True):
+                # Pre-fill the CT price review flow's session state so it
+                # starts at Step 3 (document upload) with supplier + tour known.
+                _supplier_name = selected  # the selectbox label carries the name
+                st.session_state.ctpr_step = 3
+                st.session_state.ctpr_supplier_id = supplier_id
+                st.session_state.ctpr_supplier_name = _supplier_name
+                st.session_state.ctpr_tour_code_input = code
+                st.session_state.ctpr_tour_code = code
+                st.session_state.ctpr_provider_code = tour.get("providerCode") or code
+                st.session_state.ctpr_nights = tour.get("nights")
+                st.session_state.ctpr_currency = tour.get("currency") or "EUR"
+                st.session_state.ctpr_modality_codes = tour.get("modalityCodes") or modality_codes
+                st.session_state.ctpr_fetched_tour = tour
+                st.session_state[f"{_KEY}goto_price_review"] = True
+                st.rerun()
 
     # Summary
     st.markdown("---")
