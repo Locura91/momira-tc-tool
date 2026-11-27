@@ -24,7 +24,7 @@ name/label field. The "name" field shown in the UI is a local convenience label 
 human's own reference; it is not sent to TC and not stored.
 """
 
-MODULE_BUILD = "2026-11-27-repeat-off-by-default"
+MODULE_BUILD = "2026-11-27-overwrite-mode"
 
 import json
 import re as _re_bss
@@ -256,7 +256,7 @@ def _to_transfer_wire_shape(entry: Dict) -> Dict:
     return {"startDate": entry["start"], "endDate": entry["end"]}
 
 
-def _apply_transfer(client, supplier_id: str, product: Dict, new_ranges: List[Dict]) -> Dict:
+def _apply_transfer(client, supplier_id: str, product: Dict, new_ranges: List[Dict], overwrite: bool = False) -> Dict:
     """GET the transfer, merge stop sales, PUT it back.
 
     The returned dict carries the TC id and the count of ranges actually added so
@@ -285,14 +285,19 @@ def _apply_transfer(client, supplier_id: str, product: Dict, new_ranges: List[Di
     # legacy start/end on an older record) to {start, end} so the merge works.
     live = [n for n in (_normalise_transfer_stop_sale_in(s) for s in (rec.get("stopSales") or []))
             if n is not None]
-    result = ssp.merge_stop_sales(live, new_ranges)
-    if not result["added"]:
-        return {"status": "unchanged", "name": name, "id": tid,
-                "detail": f"every date was already blocked on {tid}"}
+    if overwrite:
+        final_ranges = new_ranges
+        added = new_ranges
+    else:
+        result = ssp.merge_stop_sales(live, new_ranges)
+        if not result["added"]:
+            return {"status": "unchanged", "name": name, "id": tid,
+                    "detail": f"every date was already blocked on {tid}"}
+        final_ranges = result["merged"]
+        added = result["added"]
     payload = dict(rec)
-    # Write back in TC's required Transfer-specific wire shape - every merged
-    # entry, both the existing ones we read in and the new ones we added.
-    payload["stopSales"] = [_to_transfer_wire_shape(r) for r in result["merged"]]
+    # Write back in TC's required Transfer-specific wire shape.
+    payload["stopSales"] = [_to_transfer_wire_shape(r) for r in final_ranges]
     try:
         res = client.update_transfer(supplier_id, payload)
     except Exception as e:
@@ -302,53 +307,82 @@ def _apply_transfer(client, supplier_id: str, product: Dict, new_ranges: List[Di
         return {"status": "failed", "name": name, "id": tid,
                 "detail": str(res.get("message") or res.get("error"))}
     return {"status": "updated", "name": name, "id": tid,
-            "added": result["added"],
-            "detail": f"{tid}: {len(result['added'])} new range(s) added"}
+            "added": added,
+            "detail": f"{tid}: {len(added)} range(s) written"}
 
 
-def _apply_ticket(client, supplier_id: str, product: Dict, new_ranges: List[Dict]) -> List[Dict]:
+def _overwrite_option_stop_sales(client, update_fn, name: str, opt: dict,
+                                 new_ranges: List[Dict]) -> Dict:
+    """Replace the stopSales on `opt` with exactly `new_ranges` and PUT it back."""
+    payload = dict(opt)
+    payload["stopSales"] = new_ranges
+    try:
+        res = update_fn(payload)
+    except Exception as e:
+        return {"status": "failed", "name": name, "detail": friendly_error_message(e)}
+    if isinstance(res, dict) and "error" in res:
+        return {"status": "failed", "name": name,
+                "detail": str(res.get("message") or res.get("error"))}
+    return {"status": "updated", "name": name, "added": new_ranges,
+            "detail": f"{len(new_ranges)} range(s) written (overwrite)"}
+
+
+def _apply_ticket(client, supplier_id: str, product: Dict, new_ranges: List[Dict],
+                  overwrite: bool = False) -> List[Dict]:
     results = []
     for mod_code in (product.get("modalities") or []):
+        label = f"{product['name']} / {mod_code}"
         try:
             opt = client.get_ticket_option(supplier_id, product["id"], mod_code)
         except Exception as e:
-            results.append({"status": "failed",
-                            "name": f"{product['name']} / {mod_code}",
+            results.append({"status": "failed", "name": label,
                             "detail": friendly_error_message(e)})
             continue
         if isinstance(opt, dict) and "error" in opt:
-            results.append({"status": "failed",
-                            "name": f"{product['name']} / {mod_code}",
+            results.append({"status": "failed", "name": label,
                             "detail": str(opt.get("message") or opt.get("error"))})
             continue
-        r = sst.apply_to_ticket_option(client, supplier_id, product["id"], opt, new_ranges)
-        r["name"] = f"{product['name']} / {mod_code}"
+        if overwrite:
+            r = _overwrite_option_stop_sales(
+                client,
+                lambda p: client.update_ticket_option(supplier_id, product["id"], p),
+                label, opt, new_ranges)
+        else:
+            r = sst.apply_to_ticket_option(client, supplier_id, product["id"], opt, new_ranges)
+            r["name"] = label
         results.append(r)
     return results
 
 
-def _apply_tour(client, supplier_id: str, product: Dict, new_ranges: List[Dict]) -> List[Dict]:
+def _apply_tour(client, supplier_id: str, product: Dict, new_ranges: List[Dict],
+                overwrite: bool = False) -> List[Dict]:
     results = []
     for opt_code in (product.get("modalities") or []):
+        label = f"{product['name']} / {opt_code}"
         try:
             opt = client.get_closed_tour_option(supplier_id, product["id"], opt_code)
         except Exception as e:
-            results.append({"status": "failed",
-                            "name": f"{product['name']} / {opt_code}",
+            results.append({"status": "failed", "name": label,
                             "detail": friendly_error_message(e)})
             continue
         if isinstance(opt, dict) and "error" in opt:
-            results.append({"status": "failed",
-                            "name": f"{product['name']} / {opt_code}",
+            results.append({"status": "failed", "name": label,
                             "detail": str(opt.get("message") or opt.get("error"))})
             continue
-        r = sst.apply_to_tour_option(client, supplier_id, product["id"], opt, new_ranges)
-        r["name"] = f"{product['name']} / {opt_code}"
+        if overwrite:
+            r = _overwrite_option_stop_sales(
+                client,
+                lambda p: client.update_closed_tour_option(supplier_id, product["id"], p),
+                label, opt, new_ranges)
+        else:
+            r = sst.apply_to_tour_option(client, supplier_id, product["id"], opt, new_ranges)
+            r["name"] = label
         results.append(r)
     return results
 
 
-def _apply_hotel(client, supplier_id: str, product: Dict, new_ranges: List[Dict]) -> List[Dict]:
+def _apply_hotel(client, supplier_id: str, product: Dict, new_ranges: List[Dict],
+                 overwrite: bool = False) -> List[Dict]:
     try:
         rec = client.get_hotel(supplier_id, product["id"])
     except Exception as e:
@@ -366,32 +400,60 @@ def _apply_hotel(client, supplier_id: str, product: Dict, new_ranges: List[Dict]
     for rate in rates:
         if not isinstance(rate, dict):
             continue
-        r = sst.apply_to_hotel_rate(client, supplier_id, product["id"],
-                                     rate, new_ranges, room_names)
         rate_name = rate.get("name") or rate.get("code") or "(unnamed rate)"
-        r["name"] = f"{product['name']} / {rate_name}"
-        results.append(r)
+        label = f"{product['name']} / {rate_name}"
+        if overwrite:
+            updated_rate = dict(rate)
+            updated_rate["stopSales"] = new_ranges
+            updated_rates = [updated_rate if (r.get("code") or r.get("name")) ==
+                             (rate.get("code") or rate.get("name")) else r
+                             for r in rates]
+            payload = dict(rec)
+            payload["rates"] = updated_rates
+            try:
+                res = client.update_hotel(supplier_id, payload)
+            except Exception as e:
+                results.append({"status": "failed", "name": label,
+                                 "detail": friendly_error_message(e)})
+                continue
+            if isinstance(res, dict) and "error" in res:
+                results.append({"status": "failed", "name": label,
+                                 "detail": str(res.get("message") or res.get("error"))})
+                continue
+            results.append({"status": "updated", "name": label, "added": new_ranges,
+                             "detail": f"{len(new_ranges)} range(s) written (overwrite)"})
+        else:
+            r = sst.apply_to_hotel_rate(client, supplier_id, product["id"],
+                                        rate, new_ranges, room_names)
+            r["name"] = label
+            results.append(r)
     return results
 
 
-def _apply_transport(client, supplier_id: str, product: Dict, new_ranges: List[Dict]) -> List[Dict]:
+def _apply_transport(client, supplier_id: str, product: Dict, new_ranges: List[Dict],
+                     overwrite: bool = False) -> List[Dict]:
     """Apply stop sales to ALL options of a transport automatically."""
     results = []
     for opt_code in (product.get("options") or []):
+        label = f"{product['name']} / {opt_code}"
         try:
             opt = client.get_transport_option(supplier_id, product["id"], opt_code)
         except Exception as e:
-            results.append({"status": "failed",
-                            "name": f"{product['name']} / {opt_code}",
+            results.append({"status": "failed", "name": label,
                             "detail": friendly_error_message(e)})
             continue
         if isinstance(opt, dict) and "error" in opt:
-            results.append({"status": "failed",
-                            "name": f"{product['name']} / {opt_code}",
+            results.append({"status": "failed", "name": label,
                             "detail": str(opt.get("message") or opt.get("error"))})
             continue
-        r = sst.apply_to_transport_option(client, supplier_id, product["id"], opt, new_ranges)
-        r["name"] = f"{product['name']} / {opt_code}"
+        if overwrite:
+            r = _overwrite_option_stop_sales(
+                client,
+                lambda p: client.update_transport_option(supplier_id, product["id"], p),
+                label, opt, new_ranges)
+        else:
+            r = sst.apply_to_transport_option(client, supplier_id, product["id"], opt, new_ranges)
+            r["name"] = label
         results.append(r)
     return results
 
@@ -510,7 +572,7 @@ def render_bulk_stop_sales_flow(client):
     def _wkey(p):
         return f"bss_prod_{p['kind']}_{p['id']}"
 
-    sel_cols = st.columns([1, 1])
+    sel_cols = st.columns([1, 1, 2])
     with sel_cols[0]:
         if st.button("✅ Select all (visible)", key="bss_sel_all"):
             # CONFIRMED (operator, 2026-11-23): Select all now applies to the FILTERED
@@ -524,6 +586,16 @@ def render_bulk_stop_sales_flow(client):
             for p in all_products:  # clear every box, filtered or not
                 st.session_state[_wkey(p)] = False
             st.rerun()
+    with sel_cols[2]:
+        overwrite_mode = st.checkbox(
+            "🔴 Overwrite existing stop sales",
+            value=st.session_state.get("bss_overwrite", False),
+            key="bss_overwrite",
+            help="When ticked: REPLACES all existing stop sales on each product "
+                 "with only the ranges you enter here. Any previously set blocks "
+                 "are removed. Leave unticked (default) to MERGE — existing "
+                 "blocks are kept and the new ranges are added."
+        )
 
     # Group by type for display - the filtered list only.
     by_type: Dict[str, List] = {}
@@ -890,11 +962,19 @@ def render_bulk_stop_sales_flow(client):
     # ── apply ─────────────────────────────────────────────────────────────────
     st.divider()
     _range_word = "range" if len(new_ranges) == 1 else "ranges"
-    st.warning(
-        f"This will block **{len(new_ranges)} date {_range_word}** "
-        f"on **{len(selected_products)} product(s)**. "
-        f"Existing blocks are kept; these dates are added to them."
-    )
+    if overwrite_mode:
+        st.error(
+            f"⚠️ **Overwrite mode**: ALL existing stop sales on the selected "
+            f"**{len(selected_products)} product(s)** will be **replaced** with "
+            f"the **{len(new_ranges)} date {_range_word}** entered above. "
+            f"Previously set blocks will be lost."
+        )
+    else:
+        st.warning(
+            f"This will block **{len(new_ranges)} date {_range_word}** "
+            f"on **{len(selected_products)} product(s)**. "
+            f"Existing blocks are kept; these dates are added to them."
+        )
 
     if st.button("✅ Apply stop sales", type="primary", key="bss_apply"):
         all_results = []
@@ -905,15 +985,15 @@ def render_bulk_stop_sales_flow(client):
             kind = product["kind"]
             product_results: List[Dict] = []
             if kind == "Transfer":
-                product_results.append(_apply_transfer(client, supplier_id, product, new_ranges))
+                product_results.append(_apply_transfer(client, supplier_id, product, new_ranges, overwrite=overwrite_mode))
             elif kind == "Ticket":
-                product_results.extend(_apply_ticket(client, supplier_id, product, new_ranges))
+                product_results.extend(_apply_ticket(client, supplier_id, product, new_ranges, overwrite=overwrite_mode))
             elif kind == "ClosedTour":
-                product_results.extend(_apply_tour(client, supplier_id, product, new_ranges))
+                product_results.extend(_apply_tour(client, supplier_id, product, new_ranges, overwrite=overwrite_mode))
             elif kind == "Hotel":
-                product_results.extend(_apply_hotel(client, supplier_id, product, new_ranges))
+                product_results.extend(_apply_hotel(client, supplier_id, product, new_ranges, overwrite=overwrite_mode))
             elif kind == "Transport":
-                product_results.extend(_apply_transport(client, supplier_id, product, new_ranges))
+                product_results.extend(_apply_transport(client, supplier_id, product, new_ranges, overwrite=overwrite_mode))
             # Stamp every result with the TC product id so the result banner can
             # show e.g. TRANSFER-454499 next to each row (operator's cross-check
             # request, 2026-11-23). Done here rather than in each _apply_* helper
