@@ -24,7 +24,7 @@ name/label field. The "name" field shown in the UI is a local convenience label 
 human's own reference; it is not sent to TC and not stored.
 """
 
-MODULE_BUILD = "2026-11-23-multi-range-destination-yearly"
+MODULE_BUILD = "2026-11-27-repeat-off-by-default"
 
 import json
 import re as _re_bss
@@ -599,13 +599,24 @@ def render_bulk_stop_sales_flow(client):
             r_end = st.date_input(f"To (inclusive)", value=r_start,
                                   format="DD/MM/YYYY", key=_end_key)
         with rcol_c:
-            r_years = st.number_input(
-                "Repeat yearly × ", min_value=1, max_value=10, value=1, step=1,
-                key=f"bss_years_{idx}",
-                help="1 = just this year. 10 = this year plus the next 9 "
-                     "(same month and day each year). Useful for permanently seasonal "
-                     "routes (closed May-Oct for the next 10 years) or recurring "
-                     "public holidays (Nyepi, Christmas blackouts).")
+            _repeat_key = f"bss_repeat_{idx}"
+            _years_key = f"bss_years_{idx}"
+            do_repeat = st.checkbox(
+                "Repeat yearly",
+                value=st.session_state.get(_repeat_key, False),
+                key=_repeat_key,
+                help="Tick to repeat this exact date range (same month/day) "
+                     "for multiple consecutive years — e.g. a seasonal closure "
+                     "or a recurring public holiday. Leave unticked for a "
+                     "one-off block that only applies in the year shown.")
+            if do_repeat:
+                r_years = st.number_input(
+                    "How many years?", min_value=2, max_value=10, value=2, step=1,
+                    key=_years_key,
+                    help="2 = this year + next year. 10 = this year plus the next 9.")
+            else:
+                r_years = 1
+                st.session_state.pop(_years_key, None)
         with rcol_d:
             st.markdown("<br>", unsafe_allow_html=True)  # vertical align with inputs
             if idx > 0 and st.button("🗑", key=f"bss_del_range_{idx}",
