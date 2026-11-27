@@ -15,7 +15,7 @@ Usage: wired into app.py via FLEXIBLE_SCHEDULE_AUDIT_CHOICE menu entry.
 """
 import streamlit as st
 
-MODULE_BUILD = "2026-11-27-transport-audit"
+MODULE_BUILD = "2026-11-27-transport-audit-v2"
 
 # Candidate field names for "Flexible schedule" — TC's published schema does not
 # document this field, so we probe all known variants. Update once confirmed from
@@ -269,27 +269,48 @@ def render_flexible_schedule_audit(client):
                     continue
 
                 for t in transports:
-                    # Capture bool fields from the first transport we see
+                    t_id = t.get("id", "?")
+                    is_active = t.get("active", True)
+
+                    # The list endpoint strips segment time fields — fetch each transport
+                    # individually to get the full segment data needed for flex detection.
+                    full_t = t
+                    try:
+                        fetched = client.get_transport(sid, t_id)
+                        if isinstance(fetched, dict) and fetched.get("id"):
+                            full_t = fetched
+                    except Exception:
+                        pass  # fall back to list data
+
+                    # Capture bool fields from the first transport we see (full fetch)
                     if sample_bool_fields is None:
-                        sample_bool_fields = _bool_fields(t, "transport.")
-                        for seg in (t.get("segments") or [])[:1]:
+                        sample_bool_fields = _bool_fields(full_t, "transport.")
+                        for seg in (full_t.get("segments") or [])[:1]:
                             sample_bool_fields += _bool_fields(seg, "segment.")
 
-                    is_active = t.get("active", True)
-                    is_flex, flex_reason = _is_flexible(t)
+                    is_flex, flex_reason = _is_flexible(full_t)
+
+                    # Build segment time summary for display
+                    seg_summary = []
+                    for seg in (full_t.get("segments") or []):
+                        dep = seg.get("departureTime") or "?"
+                        arr = seg.get("arrivalTime") or "?"
+                        dur = seg.get("durationTime") or "?"
+                        seg_summary.append(f"{dep}→{arr} (dur {dur})")
 
                     row = {
-                        "transport_id": t.get("id", "?"),
-                        "name": t.get("name") or "(unnamed)",
+                        "transport_id": t_id,
+                        "name": full_t.get("name") or t.get("name") or "(unnamed)",
                         "supplier": sname,
                         "supplier_id": sid,
-                        "type": t.get("transportType", "?"),
+                        "type": full_t.get("transportType") or t.get("transportType", "?"),
                         "active": is_active,
                         "flexible": is_flex,
                         "flex_reason": flex_reason,
-                        "option_codes": t.get("optionCodes") or [],
-                        "start_date": t.get("startDate") or "",
-                        "end_date": t.get("endDate") or "",
+                        "seg_times": " | ".join(seg_summary),
+                        "option_codes": full_t.get("optionCodes") or t.get("optionCodes") or [],
+                        "start_date": full_t.get("startDate") or t.get("startDate") or "",
+                        "end_date": full_t.get("endDate") or t.get("endDate") or "",
                     }
                     if is_active:
                         all_transports.append(row)
@@ -355,7 +376,10 @@ def render_flexible_schedule_audit(client):
             cols[1].write(r["name"])
             cols[2].write(r["supplier"])
             cols[3].write(r["type"])
-            cols[4].caption(r["flex_reason"] or "?")
+            reason = r["flex_reason"] or "?"
+            if r.get("seg_times"):
+                reason += f"\n\n*Segments: {r['seg_times']}*"
+            cols[4].caption(reason)
     else:
         st.success(
             f"✅ No active transports with Flexible Schedule found "
