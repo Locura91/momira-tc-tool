@@ -235,9 +235,6 @@ def render_flexible_schedule_audit(client):
     )
     st.caption(f"Module build: `{MODULE_BUILD}`")
 
-    _render_single_transport_diagnostic(client)
-    st.markdown("---")
-
     if st.button("🔍 Scan all transports", type="primary", key="fsa_scan"):
         with st.spinner("Loading suppliers…"):
             suppliers = client.get_all_suppliers()
@@ -433,5 +430,3 @@ def render_flexible_schedule_audit(client):
                 del st.session_state[k]
         st.rerun()
 
-    st.markdown("---")
-    _render_single_transport_diagnostic(client)
