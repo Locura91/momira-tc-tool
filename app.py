@@ -760,6 +760,7 @@ from flows.transport_image_bulk import render_transport_image_bulk_flow
 from flows.transport_inventory_audit import render_transport_inventory_audit_flow
 from flows.image_bulk import render_image_bulk_flow
 from flexible_schedule_audit import render_flexible_schedule_audit
+from flows.ct_modality_price_review import render_ct_modality_price_review
 
 
 
@@ -1209,6 +1210,7 @@ TOOL_FLIGHTMONITOR = "✈️ Flight Change Monitor"
 # people stop reading. See hotel_automap.py for why this can't be automated away.
 TOOL_HOTEL_AUTOMAP = "🔗 Hotels awaiting automap"
 TOOL_CLOSEDTOUR_AUDIT = "🔍 ClosedTour Audit"
+CT_MODALITY_PRICE_REVIEW = "💶 ClosedTour — Review modality prices"
 
 # A Step 1 destination that is not a product type. It sits in the same list because that is
 # where a person looks when they have something to record about a supplier, even though
@@ -1572,6 +1574,12 @@ if st.session_state.active_tool == TOOL_UPDATE and st.session_state.get("product
                "pickup point, changed cancellation terms — attached automatically to every "
                "future upload of that product type.")
 
+    if st.button(CT_MODALITY_PRICE_REVIEW, key="upd_choice_ct_modality_price", use_container_width=True):
+        st.session_state.product_type = CT_MODALITY_PRICE_REVIEW
+        st.rerun()
+    st.caption("Select a supplier, enter a ClosedTour code, upload the supplier's rate document "
+               "and let AI extract the proposed prices per modality for review before applying to TC.")
+
     st.stop()
 
 # ======================================================================
@@ -1652,6 +1660,11 @@ if st.session_state.active_tool == TOOL_UPDATE and \
         render_inventory_audit_flow(client)
     elif _bulk == FLEXIBLE_SCHEDULE_AUDIT_CHOICE:
         render_flexible_schedule_audit(client)
+    st.stop()
+
+if st.session_state.active_tool == TOOL_UPDATE and \
+        st.session_state.get("product_type") == CT_MODALITY_PRICE_REVIEW:
+    render_ct_modality_price_review(client)
     st.stop()
 
 if st.session_state.active_tool == TOOL_UPDATE:
