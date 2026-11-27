@@ -1,8 +1,9 @@
 """
 Bulk transfer supplement tool — two modes:
 
-1. CREATE a new supplement: append a brand-new supplement to every transfer (or
-   selected transfers) for a supplier.
+1. CREATE new supplements: append one or more brand-new supplements to every
+   transfer (or selected transfers) for a supplier. Multiple supplements can
+   be defined in a single apply (e.g. Chinese New Year + Christmas + Tet).
 2. DELETE all supplements: wipe every supplement from every transfer for a
    supplier (useful before re-adding supplements from scratch).
 
@@ -17,6 +18,8 @@ import supplement_apply
 from app_helpers import _ur_pick_momira_supplier
 
 _TIME_PAT = re.compile(r"^\d{2}:\d{2}$")
+
+MODULE_BUILD = "2026-11-27-multi-supplement"
 
 
 def _load_transfers(client, supplier_id):
@@ -46,45 +49,108 @@ def _load_transfers(client, supplier_id):
     return full_transfers
 
 
-def _render_create_mode(transfers):
-    """UI for creating a new supplement on transfers."""
-    st.subheader("New supplement details")
+def _render_one_supplement(idx: int) -> dict | None:
+    """Render fields for a single supplement entry. Returns the supplement dict
+    or None if validation fails."""
+    today = date.today()
 
-    name = st.text_input("Supplement name", key="tsb_c_name",
-                         help="e.g. Night Supplement, Weekend Supplement")
+    cols_top = st.columns([3, 2, 2])
+    with cols_top[0]:
+        name = st.text_input("Supplement name", key=f"tsb_name_{idx}",
+                             placeholder="e.g. Chinese New Year, Christmas Eve")
+    with cols_top[1]:
+        supp_type = st.selectbox("Type", ["ABSOLUTE", "PERCENT"], key=f"tsb_type_{idx}")
+    with cols_top[2]:
+        amount = st.number_input("Amount", min_value=0.0, step=0.5, key=f"tsb_amount_{idx}",
+                                 help="Fixed €-amount (ABSOLUTE) or percentage (PERCENT)")
+
+    cols_time = st.columns(2)
+    with cols_time[0]:
+        start_time = st.text_input("startTime HH:MM (optional)", value="",
+                                   key=f"tsb_stime_{idx}", placeholder="e.g. 22:00")
+    with cols_time[1]:
+        end_time = st.text_input("endTime HH:MM (optional)", value="",
+                                 key=f"tsb_etime_{idx}", placeholder="e.g. 06:00")
+
+    cols_date = st.columns(2)
+    with cols_date[0]:
+        start_date = st.date_input("From (inclusive)", value=today,
+                                   format="DD/MM/YYYY", key=f"tsb_sd_{idx}")
+    with cols_date[1]:
+        # Auto-set end date to start date when start changes (same logic as bulk stop sales)
+        _end_key = f"tsb_ed_{idx}"
+        if st.session_state.get(_end_key) is None or st.session_state[_end_key] < start_date:
+            st.session_state[_end_key] = start_date
+        end_date = st.date_input("To (inclusive)", value=st.session_state[_end_key],
+                                 format="DD/MM/YYYY", key=_end_key)
+
+    # Validate
     if not name:
-        st.warning("Enter a supplement name.")
+        st.caption("⚠️ Enter a supplement name above.")
         return None
-
-    supp_type = st.selectbox("Type", ["ABSOLUTE", "PERCENT"], key="tsb_c_type",
-                             help="ABSOLUTE = fixed amount, PERCENT = percentage of base price")
-    amount = st.number_input("Amount", min_value=0.0, step=0.5, key="tsb_c_amount",
-                             help="e.g. 15.0 for €15 (ABSOLUTE) or 50.0 for 50% (PERCENT)")
-
-    st.markdown("**Time window** (leave empty if the supplement has no time condition)")
-    tc1, tc2 = st.columns(2)
-    with tc1:
-        start_time = st.text_input("startTime (HH:MM)", value="", key="tsb_c_start_time",
-                                   help="e.g. 22:00")
-    with tc2:
-        end_time = st.text_input("endTime (HH:MM)", value="", key="tsb_c_end_time",
-                                 help="e.g. 06:00")
-
     if start_time and not _TIME_PAT.match(start_time):
-        st.error("startTime must be HH:MM format.")
+        st.error(f"Supplement {idx + 1}: startTime must be HH:MM format.")
         return None
     if end_time and not _TIME_PAT.match(end_time):
-        st.error("endTime must be HH:MM format.")
+        st.error(f"Supplement {idx + 1}: endTime must be HH:MM format.")
+        return None
+    if end_date < start_date:
+        st.error(f"Supplement {idx + 1}: end date must be on or after start date.")
         return None
 
-    st.markdown("**Date validity**")
-    today = date.today()
-    dc1, dc2 = st.columns(2)
-    with dc1:
-        start_date = st.date_input("startDate", value=today, key="tsb_c_start_date")
-    with dc2:
-        end_date = st.date_input("endDate", value=date(today.year + 1, today.month, today.day),
-                                 key="tsb_c_end_date")
+    supp = {
+        "active": True,
+        "name": name,
+        "type": supp_type,
+        "amount": amount,
+        "startDate": start_date.isoformat(),
+        "endDate": end_date.isoformat(),
+    }
+    if start_time:
+        supp["startTime"] = start_time
+    if end_time:
+        supp["endTime"] = end_time
+    return supp
+
+
+def _render_create_mode(transfers):
+    """UI for creating one or more supplements on transfers."""
+    st.subheader("New supplements to add")
+    st.caption("Define one or more supplements below — all will be added to the selected "
+               "transfers in a single apply. Click **＋ Add another supplement** to add "
+               "e.g. Chinese New Year, Tet, Christmas, New Year's Eve at once.")
+
+    if "tsb_supp_count" not in st.session_state:
+        st.session_state.tsb_supp_count = 1
+
+    count = st.session_state.tsb_supp_count
+    supplements = []
+    all_valid = True
+
+    for idx in range(count):
+        with st.expander(f"Supplement {idx + 1}", expanded=True):
+            del_col, _ = st.columns([1, 5])
+            if idx > 0:
+                with del_col:
+                    if st.button("🗑 Remove", key=f"tsb_del_{idx}"):
+                        st.session_state.tsb_supp_count = max(1, count - 1)
+                        for k in [f"tsb_name_{idx}", f"tsb_type_{idx}", f"tsb_amount_{idx}",
+                                  f"tsb_stime_{idx}", f"tsb_etime_{idx}",
+                                  f"tsb_sd_{idx}", f"tsb_ed_{idx}"]:
+                            st.session_state.pop(k, None)
+                        st.rerun()
+            supp = _render_one_supplement(idx)
+            if supp is None:
+                all_valid = False
+            else:
+                supplements.append(supp)
+
+    if st.button("＋ Add another supplement", key="tsb_add_supp"):
+        st.session_state.tsb_supp_count += 1
+        st.rerun()
+
+    if not all_valid or not supplements:
+        return None
 
     st.divider()
     transfer_scope = st.radio("Add to which transfers?",
@@ -105,27 +171,19 @@ def _render_create_mode(transfers):
             return None
         selected_tids = set(picks)
 
-    new_supp = {
-        "active": True,
-        "name": name,
-        "type": supp_type,
-        "amount": amount,
-        "startDate": start_date.isoformat(),
-        "endDate": end_date.isoformat(),
-    }
-    if start_time:
-        new_supp["startTime"] = start_time
-    if end_time:
-        new_supp["endTime"] = end_time
-
     target_count = len(selected_tids) if selected_tids else len(transfers)
 
-    with st.expander("Preview new supplement"):
-        for k, v in new_supp.items():
-            st.text(f"  {k}: {v}")
+    with st.expander(f"Preview: {len(supplements)} supplement(s) → {target_count} transfer(s)"):
+        for s in supplements:
+            st.markdown(
+                f"**{s['name']}** — {s['type']} {s['amount']} · "
+                f"{s['startDate']} → {s['endDate']}"
+                + (f" · time {s.get('startTime', '')}–{s.get('endTime', '')}"
+                   if s.get('startTime') or s.get('endTime') else "")
+            )
         st.caption(f"Will be added to **{target_count}** transfer(s).")
 
-    return ("create", new_supp, selected_tids, target_count)
+    return ("create", supplements, selected_tids, target_count)
 
 
 def _render_delete_mode(transfers):
@@ -205,8 +263,13 @@ def render_transfer_surcharge_bulk_flow(client):
     # ── Apply button ─────────────────────────────────────────────────
     st.divider()
     if result[0] == "create":
-        _, new_supp, selected_tids, target_count = result
-        label = f"Add supplement to {target_count} transfer(s)"
+        _, supplements_list, selected_tids, target_count = result
+        n = len(supplements_list)
+        label = (
+            f"Add {n} supplement(s) to {target_count} transfer(s)"
+            if n > 1
+            else f"Add supplement to {target_count} transfer(s)"
+        )
     else:
         _, transfers_with_supps, total_supps = result
         label = f"⚠️ Delete all {total_supps} supplement(s) from {transfers_with_supps} transfer(s)"
@@ -214,34 +277,47 @@ def render_transfer_surcharge_bulk_flow(client):
     already_applied = st.session_state.get("tsb_applied_once") and result[0] == "create"
     if already_applied:
         st.button(label, key="tsb_apply", type="primary", disabled=True)
-        st.caption("✅ Supplement already added — reload transfers to add again or switch mode.")
+        st.caption("✅ Supplements added — reload transfers to add again or switch mode.")
         return
     if not st.button(label, key="tsb_apply", type="primary"):
         return
 
     # ── Execute ──────────────────────────────────────────────────────
-    # Shared with the Ticket/ClosedTour/Hotel tools via supplement_apply, so the
-    # destructive path is covered by tests rather than only reachable through this screen.
     bar = st.progress(0, text="Applying…")
-
-    def _prog(done, total):
-        bar.progress(done / max(total, 1), text=f"Applying… ({done}/{total})")
+    all_ok = 0
+    all_failed = 0
+    all_errors = []
 
     if result[0] == "create":
-        res = supplement_apply.apply_create(
-            client, supplier_id, "Transfer", transfers, new_supp,
-            selected_labels=selected_tids, progress=_prog)
-        if res["ok"]:
+        for s_idx, new_supp in enumerate(supplements_list):
+            def _prog(done, total, _idx=s_idx, _n=len(supplements_list)):
+                pct = (_idx / _n) + (done / max(total, 1)) / _n
+                bar.progress(
+                    min(pct, 1.0),
+                    text=f"Supplement {_idx + 1}/{_n}: applying… ({done}/{total})"
+                )
+            res = supplement_apply.apply_create(
+                client, supplier_id, "Transfer", transfers, new_supp,
+                selected_labels=selected_tids, progress=_prog)
+            all_ok += res.get("ok", 0)
+            all_failed += res.get("failed", 0)
+            all_errors.extend(res.get("errors", []))
+        if all_ok:
             st.session_state.tsb_applied_once = True
     else:
+        def _prog(done, total):
+            bar.progress(done / max(total, 1), text=f"Applying… ({done}/{total})")
         res = supplement_apply.apply_delete_all(
             client, supplier_id, "Transfer", transfers, progress=_prog)
+        all_ok = res.get("ok", 0)
+        all_failed = res.get("failed", 0)
+        all_errors = res.get("errors", [])
 
     bar.empty()
 
-    if res["ok"]:
-        st.success(f"Done — **{res['ok']}** transfer(s) updated successfully.")
-    if res["failed"]:
-        st.error(f"**{res['failed']}** transfer(s) failed:")
-        for err in res["errors"]:
+    if all_ok:
+        st.success(f"Done — **{all_ok}** transfer(s) updated successfully.")
+    if all_failed:
+        st.error(f"**{all_failed}** transfer(s) failed:")
+        for err in all_errors:
             st.text(err)
