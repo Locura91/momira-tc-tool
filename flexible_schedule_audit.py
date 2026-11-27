@@ -48,38 +48,81 @@ def _extract_transport_list(result):
     return [], None
 
 
-_ALL_WEEKDAYS = {"MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"}
+def _parse_time_minutes(t_str: str | None) -> int | None:
+    """Parse HH:MM or HH:MM:SS into total minutes. Returns None if unparseable."""
+    if not t_str:
+        return None
+    try:
+        parts = str(t_str).strip().split(":")
+        h, m = int(parts[0]), int(parts[1])
+        return h * 60 + m
+    except (ValueError, IndexError, AttributeError):
+        return None
 
 
-def _is_flexible(t: dict) -> tuple[bool, str]:
-    """Returns (is_flexible, matched_field_name). Checks transport-level and segment-level."""
-    for key in _FLEXIBLE_FIELD_CANDIDATES:
-        if t.get(key) is True:
-            return True, f"transport.{key}"
-    for seg in (t.get("segments") or []):
-        for key in _FLEXIBLE_FIELD_CANDIDATES:
-            if seg.get(key) is True:
-                return True, f"segment.{key}"
+def _segment_time_mismatch(seg: dict) -> tuple[bool, str]:
+    """
+    Returns (mismatch, description).
+
+    When 'Flexible schedule' is ticked in TC, the segment stores:
+      departureTime = earliest possible departure
+      arrivalTime   = latest possible departure  (NOT the real arrival)
+      durationTime  = actual journey duration
+
+    So departureTime + durationTime ≠ arrivalTime — the window is wider
+    than the journey. We flag this mismatch as the flexible-schedule signal.
+
+    Tolerance: 5 minutes to account for rounding.
+    """
+    dep = _parse_time_minutes(seg.get("departureTime"))
+    arr = _parse_time_minutes(seg.get("arrivalTime"))
+    dur = _parse_time_minutes(seg.get("durationTime"))
+
+    if dep is None or arr is None or dur is None:
+        return False, ""  # can't evaluate without all three
+
+    expected_arr = dep + dur
+    # Allow wrap past midnight
+    actual_window = (arr - dep) % (24 * 60)
+    expected_window = dur % (24 * 60)
+
+    if abs(actual_window - expected_window) > 5:
+        dep_str = seg.get("departureTime", "?")
+        arr_str = seg.get("arrivalTime", "?")
+        dur_str = seg.get("durationTime", "?")
+        return True, (
+            f"dep {dep_str} + dur {dur_str} → expected arr ~{expected_arr // 60:02d}:{expected_arr % 60:02d}, "
+            f"got arr {arr_str} (window {actual_window} min vs journey {dur} min)"
+        )
     return False, ""
 
 
-def _early_departure(t: dict, hour_from: int = 4, hour_to: int = 9) -> str | None:
-    """Returns the first departure time (HH:MM) that falls in [hour_from, hour_to), or None."""
-    for seg in (t.get("segments") or []):
-        dep = seg.get("departureTime") or ""
-        try:
-            h = int(dep.split(":")[0])
-            if hour_from <= h < hour_to:
-                return dep
-        except (ValueError, IndexError):
-            continue
-    return None
+def _is_flexible(t: dict) -> tuple[bool, str]:
+    """
+    Returns (is_flexible, reason_string).
 
+    Primary signal: any segment where departureTime + durationTime ≠ arrivalTime
+    (the flexible-schedule pattern — TC stores earliest/latest departure as the
+    dep/arr fields when flexible is on, so the window is wider than the journey).
 
-def _all_days_operational(t: dict) -> bool:
-    """True if the transport operates on all 7 days (a signal for 'runs any day = flexible)."""
-    op_days = set(t.get("operationalDays") or [])
-    return bool(op_days) and op_days >= _ALL_WEEKDAYS
+    Fallback: explicit boolean field candidates (undocumented TC fields).
+    """
+    # Primary: time mismatch on any segment
+    for i, seg in enumerate(t.get("segments") or []):
+        mismatch, desc = _segment_time_mismatch(seg)
+        if mismatch:
+            return True, f"segment {i + 1} time mismatch — {desc}"
+
+    # Fallback: explicit field names (TC schema doesn't document these but check anyway)
+    for key in _FLEXIBLE_FIELD_CANDIDATES:
+        if t.get(key) is True:
+            return True, f"transport.{key} = true"
+    for i, seg in enumerate(t.get("segments") or []):
+        for key in _FLEXIBLE_FIELD_CANDIDATES:
+            if seg.get(key) is True:
+                return True, f"segment {i + 1}.{key} = true"
+
+    return False, ""
 
 
 def _bool_fields(d: dict, prefix: str = "") -> list[tuple[str, bool]]:
@@ -146,10 +189,28 @@ def _render_single_transport_diagnostic(client):
             st.markdown(f"*Segment {i + 1}:*")
             st.json(seg)
 
-            # Highlight any field that looks like a time range (earliest/latest)
-            time_fields = {k: v for k, v in seg.items() if "time" in k.lower() or "departure" in k.lower() or "arrival" in k.lower()}
-            if time_fields:
-                st.caption(f"Time-related fields on segment {i + 1}: `{time_fields}`")
+            dep_m = _parse_time_minutes(seg.get("departureTime"))
+            arr_m = _parse_time_minutes(seg.get("arrivalTime"))
+            dur_m = _parse_time_minutes(seg.get("durationTime"))
+
+            if dep_m is not None and arr_m is not None and dur_m is not None:
+                expected = dep_m + dur_m
+                window = (arr_m - dep_m) % (24 * 60)
+                if abs(window - dur_m) > 5:
+                    st.error(
+                        f"⚠️ **Time mismatch — FLEXIBLE SCHEDULE detected** on segment {i + 1}: "
+                        f"`departureTime` {seg.get('departureTime')} + `durationTime` {seg.get('durationTime')} "
+                        f"= expected arrival ~{expected // 60:02d}:{expected % 60:02d}, "
+                        f"but `arrivalTime` = {seg.get('arrivalTime')} "
+                        f"(window is {window} min, journey is {dur_m} min)"
+                    )
+                else:
+                    st.success(
+                        f"✅ Segment {i + 1} times are consistent: "
+                        f"{seg.get('departureTime')} + {seg.get('durationTime')} ≈ {seg.get('arrivalTime')}"
+                    )
+            elif dep_m is not None and arr_m is not None and dur_m is None:
+                st.warning(f"Segment {i + 1}: no `durationTime` — cannot evaluate mismatch.")
 
     # Specifically flag if any field value looks like "flexible"
     import json as _json
@@ -215,9 +276,7 @@ def render_flexible_schedule_audit(client):
                             sample_bool_fields += _bool_fields(seg, "segment.")
 
                     is_active = t.get("active", True)
-                    is_flex, flex_field = _is_flexible(t)
-                    early_dep = _early_departure(t)
-                    all_days = _all_days_operational(t)
+                    is_flex, flex_reason = _is_flexible(t)
 
                     row = {
                         "transport_id": t.get("id", "?"),
@@ -227,13 +286,10 @@ def render_flexible_schedule_audit(client):
                         "type": t.get("transportType", "?"),
                         "active": is_active,
                         "flexible": is_flex,
-                        "flex_field": flex_field,
-                        "early_departure": early_dep,
-                        "all_days": all_days,
+                        "flex_reason": flex_reason,
                         "option_codes": t.get("optionCodes") or [],
                         "start_date": t.get("startDate") or "",
                         "end_date": t.get("endDate") or "",
-                        "operational_days": t.get("operationalDays") or [],
                     }
                     if is_active:
                         all_transports.append(row)
@@ -286,20 +342,20 @@ def render_flexible_schedule_audit(client):
         )
         st.markdown("### Transports with Flexible Schedule — fix these in TC")
 
-        hdr = st.columns([2, 3, 2, 1, 2])
+        hdr = st.columns([2, 3, 2, 1, 4])
         hdr[0].markdown("**Transport ID**")
         hdr[1].markdown("**Name**")
         hdr[2].markdown("**Supplier**")
         hdr[3].markdown("**Type**")
-        hdr[4].markdown("**Field that matched**")
+        hdr[4].markdown("**Why flagged (time mismatch)**")
 
         for r in flexible_transports:
-            cols = st.columns([2, 3, 2, 1, 2])
+            cols = st.columns([2, 3, 2, 1, 4])
             cols[0].code(r["transport_id"])
             cols[1].write(r["name"])
             cols[2].write(r["supplier"])
             cols[3].write(r["type"])
-            cols[4].code(r["flex_field"] or "?")
+            cols[4].caption(r["flex_reason"] or "?")
     else:
         st.success(
             f"✅ No active transports with Flexible Schedule found "
@@ -312,22 +368,6 @@ def render_flexible_schedule_audit(client):
         )
 
     st.markdown("---")
-
-    # ── Additional signals ────────────────────────────────────────────────────
-    _early = [r for r in all_transports if r["early_departure"]]
-    _all_days = [r for r in all_transports if r["all_days"]]
-
-    if _early:
-        with st.expander(f"🌅 {len(_early)} transport(s) with early departure (04:00–09:00)", expanded=False):
-            st.caption("These depart between 04:00 and 09:00. If 'Flexible schedule' in TC typically appears on early-morning transports, review this list.")
-            for r in _early:
-                st.markdown(f"- `{r['transport_id']}` **{r['name']}** ({r['supplier']}) — departs **{r['early_departure']}**")
-
-    if _all_days:
-        with st.expander(f"📅 {len(_all_days)} transport(s) operating all 7 days (possible flexible signal)", expanded=False):
-            st.caption("These transports have all 7 operational days enabled — a potential proxy for 'flexible schedule'.")
-            for r in _all_days:
-                st.markdown(f"- `{r['transport_id']}` **{r['name']}** ({r['supplier']})")
 
     st.markdown("---")
 
@@ -347,15 +387,11 @@ def render_flexible_schedule_audit(client):
 
         for r in all_transports:
             cols = st.columns([2, 3, 2, 1, 1, 2, 2])
-            flags = ""
-            if r["flexible"]:
-                flags += " 🔴flex"
-            if r["early_departure"]:
-                flags += f" 🌅{r['early_departure']}"
-            if r["all_days"]:
-                flags += " 📅7d"
             cols[0].code(r["transport_id"])
-            cols[1].write(r["name"] + (f"  `{flags.strip()}`" if flags else ""))
+            label = r["name"]
+            if r["flexible"]:
+                label += "  🔴 flex"
+            cols[1].write(label)
             cols[2].write(r["supplier"])
             cols[3].write(r["type"])
             cols[4].write(str(len(r["option_codes"])))
