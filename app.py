@@ -894,7 +894,7 @@ if st.session_state.client is None:
     st.session_state.client = TravelCompositorAPI()
 client = st.session_state.client
 
-BUILD_VERSION = "2026-11-26-review-simplified"
+BUILD_VERSION = "2026-11-27-modality-review"
 
 # Every module delivered alongside app.py carries the same MODULE_BUILD string. Comparing them
 # here catches a PARTIAL DEPLOY - one file committed and pushed, another left behind - which is
@@ -2371,7 +2371,7 @@ if not ct_adjust_mode and st.button("🔎 Extract", disabled=not (url or uploade
                 # category) to a tour whose images already exist - a new price document has no
                 # reason to carry images at all, so skip the extraction/upload work entirely
                 # for this action rather than silently doing it every time regardless.
-                if action != "add_option":
+                if action not in ("add_option", "update_tour"):
                     remaining_budget = 12 - len(doc_raw_images)
                     _doc_image_errors = []
                     embedded_images = extract_images(tmp_path, max_images=remaining_budget, seen_hashes=seen_image_hashes, errors=_doc_image_errors, label=uploaded.name) if remaining_budget > 0 else []
@@ -2463,7 +2463,11 @@ if not ct_adjust_mode and st.button("🔎 Extract", disabled=not (url or uploade
                     sources_desc = " + ".join(filter(None, [url] + doc_names))
                     st.session_state.raw_preview = f"Source(s): {sources_desc}\n\n{raw_text}"
                     st.session_state.payloads = None
-                    _warn_page_image_upload_errors(_add_page_images_to_doc_pool(url, doc_raw_images, doc_image_urls))
+                    # For update_tour, images already exist on the live tour - skip auto-upload
+                    # and page image pool entirely; the existing image_urls from the live baseline
+                    # are already in data via _merge_extraction_over_baseline above.
+                    if action != "update_tour":
+                        _warn_page_image_upload_errors(_add_page_images_to_doc_pool(url, doc_raw_images, doc_image_urls))
                     st.session_state.doc_raw_images = doc_raw_images
                     st.session_state.hosted_image_candidates = list(dict.fromkeys(doc_image_urls))
                     # CONFIRMED PRODUCT-OWNER REQUEST (2026-09-23, verbatim): "...I cannot
@@ -2477,10 +2481,11 @@ if not ct_adjust_mode and st.button("🔎 Extract", disabled=not (url or uploade
                     # that drives it) instead of waiting for a manual tick-and-"Add selected"
                     # click. The "Images found" section below now only confirms what was
                     # auto-added, it no longer gates on a click.
-                    auto_images = list(dict.fromkeys(
-                        [u for u in data.get("image_urls", []) if u] + st.session_state.hosted_image_candidates))
-                    data["image_urls"] = auto_images or [FALLBACK_IMAGE]
-                    st.session_state.images_text_value = "\n".join(auto_images)
+                    if action != "update_tour":
+                        auto_images = list(dict.fromkeys(
+                            [u for u in data.get("image_urls", []) if u] + st.session_state.hosted_image_candidates))
+                        data["image_urls"] = auto_images or [FALLBACK_IMAGE]
+                        st.session_state.images_text_value = "\n".join(auto_images)
                     st.session_state.extracted = data
                     st.success("Extraction complete. Review and edit below.")
         except Exception as e:
@@ -3099,41 +3104,48 @@ if st.session_state.extracted:
     _continue_enabled = price_list_valid if not _hide_modality_sections else True
     if st.button(_ct_continue_label,
                 disabled=not _continue_enabled):
-        # CONFIRMED BUG FIX (audit CRITICAL #3, 2026-09-01): used to fall back to a fresh,
-        # UN-validated read of st.session_state.fetched_tour_provider_code here - if that global
-        # was stale (left over from checking a different tour), it could win over an empty
-        # `provider_code` and silently publish under the wrong tour's code. `provider_code`
-        # (module-level, above) already carries the fetched_tour_matches_code()-validated value
-        # when one applies - nothing else should be trusted here.
-        _ct_spinner_msg = ("Preparing payload..." if is_option_only
-                           else "Resolving destinations against Travel Compositor...")
-        with st.spinner(_ct_spinner_msg):
-            try:
-                # HumanPreConfig() itself used to be constructed OUTSIDE this
-                # try block - if provider_code didn't match the required
-                # "XXX-Number" format, its pydantic validation raised
-                # unguarded and crashed the whole app instead of showing a
-                # contained error here. Moved inside the try so that failure
-                # mode is caught too, not just failures inside
-                # build_closed_tour_payloads.
-                pre_config = HumanPreConfig(
-                    supplier_id=supplier_id,
-                    provider_code=provider_code or "XXX-1",
-                    min_pax=min_pax, max_pax=max_pax, currency=currency,
-                    modality_code=modality_code, on_request=on_request,
-                    days_available_before_release=days_available_before_release
-                )
-                st.session_state.payloads = build_closed_tour_payloads(pre_config, data, client)
-                st.session_state.pre_config = pre_config
-                st.session_state.payloads_data_fingerprint = _data_fingerprint(data)
-            except Exception as e:
-                # This used to be able to crash the whole app on a bad
-                # destination/network hiccup instead of showing a contained
-                # error - build_closed_tour_payloads itself now guards its
-                # main construction, but keep this as a last-resort net for
-                # anything upstream (e.g. the destination-resolution API
-                # calls themselves).
-                show_publish_error("resolve destinations / build the payload", str(e), flow="tour_legacy")
+        if _hide_modality_sections:
+            # update_tour path: before building the payload, fetch and review each live modality.
+            # Clear any stale modality review data so Step 5b re-fetches fresh from TC.
+            st.session_state.ct_modality_review_started = True
+            st.session_state.ct_live_modalities = None
+            st.session_state.payloads = None
+        else:
+            # CONFIRMED BUG FIX (audit CRITICAL #3, 2026-09-01): used to fall back to a fresh,
+            # UN-validated read of st.session_state.fetched_tour_provider_code here - if that global
+            # was stale (left over from checking a different tour), it could win over an empty
+            # `provider_code` and silently publish under the wrong tour's code. `provider_code`
+            # (module-level, above) already carries the fetched_tour_matches_code()-validated value
+            # when one applies - nothing else should be trusted here.
+            _ct_spinner_msg = ("Preparing payload..." if is_option_only
+                               else "Resolving destinations against Travel Compositor...")
+            with st.spinner(_ct_spinner_msg):
+                try:
+                    # HumanPreConfig() itself used to be constructed OUTSIDE this
+                    # try block - if provider_code didn't match the required
+                    # "XXX-Number" format, its pydantic validation raised
+                    # unguarded and crashed the whole app instead of showing a
+                    # contained error here. Moved inside the try so that failure
+                    # mode is caught too, not just failures inside
+                    # build_closed_tour_payloads.
+                    pre_config = HumanPreConfig(
+                        supplier_id=supplier_id,
+                        provider_code=provider_code or "XXX-1",
+                        min_pax=min_pax, max_pax=max_pax, currency=currency,
+                        modality_code=modality_code, on_request=on_request,
+                        days_available_before_release=days_available_before_release
+                    )
+                    st.session_state.payloads = build_closed_tour_payloads(pre_config, data, client)
+                    st.session_state.pre_config = pre_config
+                    st.session_state.payloads_data_fingerprint = _data_fingerprint(data)
+                except Exception as e:
+                    # This used to be able to crash the whole app on a bad
+                    # destination/network hiccup instead of showing a contained
+                    # error - build_closed_tour_payloads itself now guards its
+                    # main construction, but keep this as a last-resort net for
+                    # anything upstream (e.g. the destination-resolution API
+                    # calls themselves).
+                    show_publish_error("resolve destinations / build the payload", str(e), flow="tour_legacy")
 
     # CONFIRMED REAL BUG (internal audit) - see _data_fingerprint's docstring:
     # the price/supplements/stop-sales/itinerary tables above stay editable
@@ -3145,6 +3157,145 @@ if st.session_state.extracted:
         st.session_state.payloads = None
         st.warning(f"✏️ You edited the data above after building the payload - click "
                   f"**{_ct_continue_label}** again to refresh it before publishing.")
+
+    # ── Step 5b: Modality / Pricing Review (update_tour only) ─────────────────
+    # Shown after the user clicks Continue on the tour-level review. Fetches each live modality
+    # from TC and shows its prices, operational days and stop-sales for confirmation before the
+    # final payload is built. This is the second AI-assisted review call the user requested:
+    # "prices with the operational dates and all the information are way more important, and
+    # therefore we need a separate AI call so we are more precise and get these numbers correct."
+    if _hide_modality_sections and st.session_state.get("ct_modality_review_started"):
+        st.markdown("---")
+        st.header("Step 5b — Modality & Pricing Review")
+        st.info("Review the live pricing and schedule for each modality below. "
+                "Edit any fields that need changing, then click **Confirm & Build Payload** to continue.")
+
+        _ft = st.session_state.get("fetched_tour") or {}
+        _live_mcodes = _ft.get("modalityCodes") or []
+
+        if not _live_mcodes:
+            st.warning("No modality codes found on the live tour — cannot fetch pricing details. "
+                       "Click **Build Payload** below to proceed anyway.")
+        else:
+            # Fetch live modalities once and cache in session state
+            if not st.session_state.get("ct_live_modalities"):
+                _fetched_mods = []
+                with st.spinner(f"Fetching {len(_live_mcodes)} live modality/modalities from TC..."):
+                    for _mcode in _live_mcodes:
+                        try:
+                            _opt = client.get_closed_tour_option(supplier_id, provider_code or _ft.get("providerCode") or "", _mcode)
+                            if _opt and isinstance(_opt, dict) and "error" not in _opt:
+                                _fetched_mods.append({"code": _mcode, "data": _map_fetched_option_to_data(_opt), "raw": _opt})
+                            else:
+                                _fetched_mods.append({"code": _mcode, "data": {}, "raw": {}, "error": str(_opt)})
+                        except Exception as _e:
+                            _fetched_mods.append({"code": _mcode, "data": {}, "raw": {}, "error": str(_e)})
+                st.session_state.ct_live_modalities = _fetched_mods
+
+            _live_mods = st.session_state.ct_live_modalities or []
+
+            for _mi, _mod in enumerate(_live_mods):
+                _mcode = _mod["code"]
+                _mdata = _mod.get("data") or {}
+                _merr = _mod.get("error")
+                _mraw = _mod.get("raw") or {}
+                _exp_label = f"Modality: **{_mcode}**"
+                if _merr:
+                    _exp_label += " ⚠️ (fetch failed)"
+
+                with st.expander(_exp_label, expanded=True):
+                    if _merr:
+                        st.error(f"Could not load modality `{_mcode}` from TC: {_merr}")
+                        st.caption("This modality will be skipped — only the tour-level update will be published.")
+                        continue
+
+                    # ── Price list (read-only display with issue flags) ──────────
+                    _pl = _mdata.get("price_list") or []
+                    if not _pl:
+                        st.warning(f"⚠️ No pricing defined for modality `{_mcode}`.")
+                    else:
+                        st.markdown(f"**{len(_pl)} price season(s):**")
+                        import math as _math
+                        from datetime import date as _date
+                        _today_str = _date.today().isoformat()
+                        for _pi, _entry in enumerate(_pl):
+                            _sname = _entry.get("name") or f"Season {_pi + 1}"
+                            _sstart = _entry.get("startDate") or "?"
+                            _send = _entry.get("endDate") or "?"
+                            _pb = _entry.get("price") or {}
+                            _prices = {}
+                            for _occ in ("singlePrice", "doublePrice", "triplePrice", "quadruplePrice"):
+                                _mv = _pb.get(_occ)
+                                _prices[_occ] = (_mv.get("amount") if isinstance(_mv, dict) else _mv)
+                            _price_str = "  |  ".join(
+                                f"{_occ.replace('Price','')}: **{_v if _v is not None else 'N/A'}**"
+                                for _occ, _v in _prices.items()
+                            )
+                            _expired = _send != "?" and _send < _today_str
+                            _icon = "🔴" if _expired else "🟢"
+                            st.markdown(f"{_icon} **{_sname}** ({_sstart} → {_send}):  {_price_str}")
+                            if _expired:
+                                st.caption(f"⚠️ Season expired on {_send} — update the end date before publishing.")
+
+                    # ── Operational days ────────────────────────────────────────
+                    _op_days = _mdata.get("operational_days") or []
+                    _op_days_key = f"ct_mod_op_{_mi}"
+                    if _op_days_key not in st.session_state:
+                        st.session_state[_op_days_key] = _op_days
+                    st.session_state[_op_days_key] = st.multiselect(
+                        "Operational Days",
+                        ALL_WEEKDAYS,
+                        default=st.session_state[_op_days_key],
+                        key=f"{_op_days_key}_ms"
+                    )
+
+                    # ── Stop sales ──────────────────────────────────────────────
+                    _ss = _mdata.get("stop_sales") or []
+                    _ss_key = f"ct_mod_ss_{_mi}"
+                    if _ss_key not in st.session_state:
+                        st.session_state[_ss_key] = _ss
+                    render_stop_sales_editor(
+                        {**_mdata, "stop_sales": st.session_state.get(_ss_key, _ss)},
+                        f"ct_mod_{_mi}",
+                        help_text="Block dates when this modality does not operate."
+                    )
+
+                    # ── On request toggle ───────────────────────────────────────
+                    _or_key = f"ct_mod_or_{_mi}"
+                    _or_default = bool(_mraw.get("onRequest", False))
+                    if _or_key not in st.session_state:
+                        st.session_state[_or_key] = _or_default
+                    st.session_state[_or_key] = st.checkbox(
+                        "On Request", value=st.session_state[_or_key], key=f"{_or_key}_cb"
+                    )
+
+        # ── Confirm button ──────────────────────────────────────────────────────
+        if st.button("✅ Confirm Modalities & Build Payload", type="primary"):
+            # Write any edits from Step 5b back into session for the publish step
+            if _live_mcodes and st.session_state.get("ct_live_modalities"):
+                for _mi, _mod in enumerate(st.session_state.ct_live_modalities):
+                    if _mod.get("error"):
+                        continue
+                    _op_days_key = f"ct_mod_op_{_mi}"
+                    _ss_key = f"ct_mod_ss_{_mi}"
+                    _or_key = f"ct_mod_or_{_mi}"
+                    _mod["data"]["operational_days"] = st.session_state.get(f"{_op_days_key}_ms", _mod["data"].get("operational_days", []))
+                    _mod["data"]["on_request"] = st.session_state.get(f"{_or_key}_cb", False)
+            # Build the tour-level payload
+            with st.spinner("Building payload..."):
+                try:
+                    pre_config = HumanPreConfig(
+                        supplier_id=supplier_id,
+                        provider_code=provider_code or "XXX-1",
+                        min_pax=min_pax, max_pax=max_pax, currency=currency,
+                        modality_code=modality_code, on_request=on_request,
+                        days_available_before_release=days_available_before_release
+                    )
+                    st.session_state.payloads = build_closed_tour_payloads(pre_config, data, client)
+                    st.session_state.pre_config = pre_config
+                    st.session_state.payloads_data_fingerprint = _data_fingerprint(data)
+                except Exception as _e:
+                    show_publish_error("build the payload", str(_e), flow="tour_legacy")
 
     if st.session_state.payloads:
         payloads = st.session_state.payloads
