@@ -320,7 +320,7 @@ class ContractClosedTourOptionVO(BaseModel):
     stopSales: List[StopSale] = []
     priceList: List[PriceListEntry] = Field(..., description="REQUIRED by the API - seasonal pricing matrix")
     translations: Dict[str, OptionTranslation] = {}
-    quantityPerDay: int = 99
+    quantityPerDay: int = 6  # default allotment per day (product owner, 2026-11-28)
     onRequestQuantityPerDay: Optional[int] = None
     quantityPerDate: List[QuantityPerDate] = []
     onRequest: bool = True

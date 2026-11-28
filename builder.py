@@ -2974,7 +2974,7 @@ def build_closed_tour_payloads(
             # when no separate name was given (i.e. no supplier reference code was appended).
             translations={"EN": OptionTranslation(name=pre_config.modality_name or pre_config.modality_code, remarks=None)},
             onRequest=pre_config.on_request,
-            quantityPerDay=99,
+            quantityPerDay=6,
             useAdditionalOnRequestQuota=False
         )
         tour_option_payload = tour_option.dict()
