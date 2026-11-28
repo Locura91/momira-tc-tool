@@ -20,9 +20,41 @@ from typing import Optional
 import supplement_apply
 from list_response_utils import normalize_list_response
 
-MODULE_BUILD = "2026-11-27-all-four-types"
+MODULE_BUILD = "2026-11-28-yearly-repeat"
 
 _TIME_PAT = re.compile(r"^\d{2}:\d{2}$")
+
+
+def _expand_yearly(start: date, end: date, years: int):
+    """Return `years` {startDate, endDate} dicts shifted by 0…years-1 years.
+
+    Feb 29 on a non-leap year is clamped to Feb 28 so the range stays valid.
+    """
+    out = []
+    for i in range(max(1, years)):
+        def _shift(d, by=i):
+            try:
+                return d.replace(year=d.year + by)
+            except ValueError:          # Feb 29 on non-leap year
+                return d.replace(year=d.year + by, day=28)
+        out.append({"startDate": _shift(start).isoformat(),
+                    "endDate": _shift(end).isoformat()})
+    return out
+
+
+def _expand_specs(specs):
+    """Expand any spec with yearly=True into N date-shifted copies."""
+    out = []
+    for spec in specs:
+        if spec.get("yearly") and spec.get("yearly_years", 1) > 1:
+            start = date.fromisoformat(spec["startDate"])
+            end = date.fromisoformat(spec["endDate"])
+            for dates in _expand_yearly(start, end, spec["yearly_years"]):
+                copy_ = {**spec, **dates}
+                out.append(copy_)
+        else:
+            out.append(spec)
+    return out
 
 HOTEL_APPLY_TYPES = [
     "LODGING", "MEAL", "LODGING_AND_MEAL",
@@ -357,6 +389,31 @@ def _render_one_supplement(idx, do_tr, do_tk, do_ct, do_ht):
             spec["ht_child_value"] = st.number_input("Child", min_value=0.0, step=0.5,
                                                      key=f"{p}_ht_child")
 
+    # Yearly repeat (shown for Transfer and Ticket only — ClosedTour/Hotel date logic differs)
+    if do_tr or do_tk:
+        st.divider()
+        do_yearly = st.checkbox(
+            "Repeat yearly (same dates)",
+            value=False,
+            key=f"{p}_yearly",
+            help="Tick to create the same supplement for the next N years at the same "
+                 "calendar dates — e.g. Christmas 24–26 Dec every year for 10 years.")
+        if do_yearly:
+            r_years = st.number_input(
+                "How many years?", min_value=2, max_value=10, value=3, step=1,
+                key=f"{p}_years",
+                help="2 = this year + next year. 10 = this year plus the next 9.")
+            spec["yearly"] = True
+            spec["yearly_years"] = int(r_years)
+            last_year = start_date.year + int(r_years) - 1
+            st.caption(
+                f"Will create **{int(r_years)}** supplement(s): "
+                f"{start_date.strftime('%d.%m.')}–{end_date.strftime('%d.%m.')} "
+                f"from **{start_date.year}** through **{last_year}**.")
+        else:
+            spec["yearly"] = False
+            spec["yearly_years"] = 1
+
     return spec
 
 
@@ -375,7 +432,8 @@ def _render_supplements_form(do_tr, do_tk, do_ct, do_ht):
                                    "_tr_type", "_tr_amount", "_tr_stime", "_tr_etime",
                                    "_tk_type", "_tk_amount",
                                    "_ct_single", "_ct_double", "_ct_triple", "_ct_quad",
-                                   "_ht_apply", "_ht_type", "_ht_value", "_ht_child"]:
+                                   "_ht_apply", "_ht_type", "_ht_value", "_ht_child",
+                                   "_yearly", "_years"]:
                         st.session_state.pop(f"sb_{idx}{suffix}", None)
                     st.rerun()
             spec = _render_one_supplement(idx, do_tr, do_tk, do_ct, do_ht)
@@ -574,6 +632,9 @@ def render_supplement_bulk_flow(client):
                 st.info("Select at least one hotel."); return
             sel_htcodes = set(picks_ht)
 
+    # ── Expand yearly repeats before counting / applying ────────────────
+    expanded_specs = _expand_specs(specs)
+
     # ── Apply ───────────────────────────────────────────────────────────
     t_target = len(sel_tids) if sel_tids else len(transfers)
     m_target = len(sel_mkeys) if sel_mkeys else len(modalities)
@@ -582,13 +643,16 @@ def render_supplement_bulk_flow(client):
     total_targets = ((t_target if do_tr else 0) + (m_target if do_tk else 0) +
                      (ct_target if do_ct else 0) + (ht_target if do_ht else 0))
 
+    n_supp = len(expanded_specs)
+    supp_label = (f"{len(specs)} supplement(s) × {n_supp // len(specs)} year(s) = {n_supp}"
+                  if n_supp != len(specs) else f"{n_supp} supplement(s)")
+
     if st.session_state.get("sb_applied"):
-        st.button(f"Apply {len(specs)} supplement(s)", key="sb_apply",
-                  type="primary", disabled=True)
+        st.button(f"Apply {supp_label}", key="sb_apply", type="primary", disabled=True)
         st.caption("✅ Done — reload products to apply again.")
         return
 
-    if not st.button(f"Apply {len(specs)} supplement(s) to {total_targets} record(s)",
+    if not st.button(f"Apply {supp_label} to {total_targets} record(s)",
                      key="sb_apply", type="primary"):
         return
 
@@ -599,28 +663,28 @@ def render_supplement_bulk_flow(client):
 
     if do_tr and transfers:
         bar.progress(done_types / type_count, text="Applying to transfers…")
-        res = _apply_transfers(client, supplier_id, transfers, specs, sel_tids)
+        res = _apply_transfers(client, supplier_id, transfers, expanded_specs, sel_tids)
         all_ok += res["ok"]; all_failed += res["failed"]
         all_errors.extend(f"[Transfer] {e}" for e in res["errors"])
         done_types += 1
 
     if do_tk and modalities:
         bar.progress(done_types / type_count, text="Applying to ticket modalities…")
-        res = _apply_tickets(client, supplier_id, modalities, specs, sel_mkeys)
+        res = _apply_tickets(client, supplier_id, modalities, expanded_specs, sel_mkeys)
         all_ok += res["ok"]; all_failed += res["failed"]
         all_errors.extend(f"[Ticket] {e}" for e in res["errors"])
         done_types += 1
 
     if do_ct and tours:
         bar.progress(done_types / type_count, text="Applying to closed tours…")
-        res = _apply_closedtours(client, supplier_id, tours, specs, sel_ctcodes)
+        res = _apply_closedtours(client, supplier_id, tours, expanded_specs, sel_ctcodes)
         all_ok += res["ok"]; all_failed += res["failed"]
         all_errors.extend(f"[ClosedTour] {e}" for e in res["errors"])
         done_types += 1
 
     if do_ht and hotels:
         bar.progress(done_types / type_count, text="Applying to hotels…")
-        res = _apply_hotels(client, supplier_id, hotels, specs, sel_htcodes)
+        res = _apply_hotels(client, supplier_id, hotels, expanded_specs, sel_htcodes)
         all_ok += res["ok"]; all_failed += res["failed"]
         all_errors.extend(f"[Hotel] {e}" for e in res["errors"])
         done_types += 1
