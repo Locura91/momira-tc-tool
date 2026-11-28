@@ -1,16 +1,23 @@
 """
-flows/closedtour_audit.py — Two-phase ClosedTour audit.
+flows/closedtour_audit.py — ClosedTour audit with two modes.
 
-Phase 1: basic info check (name, nights, times, currency, active status).
-Phase 2: price & modality audit (date validity, price ordering, rounding,
-         child discounts, missing/zero prices, operational days).
+Mode A — Audit all:
+  Phase 1: basic info check (name, nights, times, currency, active status).
+  Phase 2: price & modality audit (date validity, price ordering, rounding,
+           child discounts, missing/zero prices, operational days).
 
-After the audit, each tour shows a "Review & update prices" button that
+Mode B — Audit existing modalities (document comparison):
+  Human uploads a price document. AI extracts prices per modality and
+  compares them against what is live in TC. Highlights differences.
+
+After mode-A audit, each tour shows a "Review & update prices" button that
 launches the CT Modality Price Review flow (flows/ct_modality_price_review.py)
 pre-filled with the supplier + tour code, skipping Steps 1-2.
 """
 
 import math
+import os
+import tempfile
 from datetime import date, timedelta
 
 import streamlit as st
@@ -18,7 +25,7 @@ import streamlit as st
 from flows.flow_ui_helpers import load_momira_suppliers as _load_momira_suppliers
 from list_response_utils import normalize_list_response
 
-MODULE_BUILD = "2026-11-27-closedtour-audit-v2"
+MODULE_BUILD = "2026-11-28-audit-doc-compare"
 
 _KEY = "cta_"
 _WRAPPER_KEYS = ("closedTour", "closedTours", "items", "data", "results", "content")
@@ -149,6 +156,214 @@ def _audit_option(option: dict, tour_code: str) -> list[str]:
     return issues
 
 
+# ── Mode B: document comparison ────────────────────────────────────────────────
+
+def _render_doc_compare(client, supplier_id, supplier_label):
+    """Load all tours, ask for a document, compare AI-extracted prices vs TC."""
+    from document_reader import extract_raw_text
+    from ai_extractor import extract_modality_data
+
+    st.markdown("### Document price comparison")
+    st.caption(
+        "Upload the supplier's price document. The AI reads prices for each "
+        "existing modality and compares them against what is currently live in TC."
+    )
+
+    # ── Load tours ────────────────────────────────────────────────────────────
+    if f"{_KEY}dc_tours" not in st.session_state or \
+            st.session_state.get(f"{_KEY}dc_supplier") != supplier_id:
+        if st.button("Load existing tours", key=f"{_KEY}dc_load", type="primary"):
+            with st.spinner("Loading closed tours…"):
+                try:
+                    raw = client.get_closed_tours(supplier_id, first=0, limit=200)
+                    tours = normalize_list_response(raw, _WRAPPER_KEYS)
+                except Exception as e:
+                    st.error(f"Failed to load: {e}"); return
+            st.session_state[f"{_KEY}dc_tours"] = tours
+            st.session_state[f"{_KEY}dc_supplier"] = supplier_id
+            st.session_state.pop(f"{_KEY}dc_raw_text", None)
+            st.session_state.pop(f"{_KEY}dc_results", None)
+            st.rerun()
+        return
+
+    tours = st.session_state[f"{_KEY}dc_tours"]
+    if not tours:
+        st.info("No closed tours found for this supplier."); return
+
+    total_mods = sum(len(t.get("modalityCodes") or []) for t in tours)
+    st.info(f"**{len(tours)}** tour(s), **{total_mods}** modality/ies loaded.")
+
+    # ── Document upload ───────────────────────────────────────────────────────
+    if f"{_KEY}dc_raw_text" not in st.session_state:
+        uploaded = st.file_uploader(
+            "Upload price document (PDF, Word, Excel, …)",
+            key=f"{_KEY}dc_upload",
+            accept_multiple_files=False,
+        )
+        if st.button("Extract & compare", key=f"{_KEY}dc_extract",
+                     type="primary", disabled=not uploaded):
+            suffix = os.path.splitext(uploaded.name)[1]
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                tmp.write(uploaded.getbuffer())
+                tmp_path = tmp.name
+            with st.spinner("Reading document…"):
+                doc_text = extract_raw_text(tmp_path)
+            if not doc_text or not doc_text.strip():
+                st.error("Could not extract text from the document. Try a different format.")
+                return
+            st.session_state[f"{_KEY}dc_raw_text"] = doc_text
+            st.session_state.pop(f"{_KEY}dc_results", None)
+            st.rerun()
+        return
+
+    raw_text = st.session_state[f"{_KEY}dc_raw_text"]
+
+    # ── AI extraction (cached) ────────────────────────────────────────────────
+    if f"{_KEY}dc_results" not in st.session_state:
+        results = []
+        prog = st.progress(0, text="Running AI extraction…")
+        all_mods = [(t, mcode)
+                    for t in tours
+                    for mcode in (t.get("modalityCodes") or [])]
+        for idx, (tour, mcode) in enumerate(all_mods):
+            tcode = tour.get("code") or ""
+            nights = tour.get("nights")
+            # Fetch live option for comparison
+            try:
+                live_opt = client.get_closed_tour_option(supplier_id, tcode, mcode)
+                if not isinstance(live_opt, dict) or "error" in live_opt:
+                    live_opt = {}
+            except Exception:
+                live_opt = {}
+            # AI extraction
+            hint = (f"Extract prices ONLY for the modality/service named '{mcode}' "
+                    f"(tour code: {tcode}). Focus on per-person occupancy prices "
+                    f"(single/double/triple/quadruple room).")
+            try:
+                ai_data = extract_modality_data(raw_text, human_hint=hint,
+                                                tour_nights=nights)
+                ai_err = None
+            except Exception as e:
+                ai_data = {}
+                ai_err = str(e)
+            results.append({
+                "tour_code": tcode, "mcode": mcode,
+                "live_opt": live_opt, "ai_data": ai_data, "ai_err": ai_err,
+            })
+            prog.progress((idx + 1) / max(len(all_mods), 1))
+        prog.empty()
+        st.session_state[f"{_KEY}dc_results"] = results
+        st.rerun()
+
+    results = st.session_state[f"{_KEY}dc_results"]
+
+    # ── Display comparison ────────────────────────────────────────────────────
+    st.markdown("---")
+    _OCC = ["singlePrice", "doublePrice", "triplePrice", "quadruplePrice"]
+    _LABEL = {"singlePrice": "Single", "doublePrice": "Double",
+               "triplePrice": "Triple", "quadruplePrice": "Quadruple"}
+    diffs_total = 0
+
+    for r in results:
+        tcode, mcode = r["tour_code"], r["mcode"]
+        live_opt = r["live_opt"]
+        ai_data = r.get("ai_data") or {}
+        ai_err = r.get("ai_err")
+
+        # Build live prices: first active price-list entry
+        live_pl = live_opt.get("priceList") or []
+        live_prices = {}   # occ → list of {season, amount}
+        for entry in live_pl:
+            pb = entry.get("price") or {}
+            sname = entry.get("name") or f"{entry.get('startDate','')}–{entry.get('endDate','')}"
+            for occ in _OCC:
+                mv = pb.get(occ)
+                amt = mv.get("amount") if isinstance(mv, dict) else mv
+                if amt is not None:
+                    live_prices.setdefault(occ, []).append((sname, amt))
+
+        # AI proposed prices (from price_list)
+        ai_pl = ai_data.get("price_list") or []
+        ai_prices = {}
+        for entry in ai_pl:
+            pb = entry.get("price") or {}
+            sname = entry.get("name") or f"{entry.get('startDate','')}–{entry.get('endDate','')}"
+            for occ in _OCC:
+                val = pb.get(occ)
+                if val is not None:
+                    ai_prices.setdefault(occ, []).append((sname, val))
+
+        # Detect mismatches (compare first season's first value for simplicity)
+        mismatches = []
+        for occ in _OCC:
+            live_vals = [amt for _, amt in live_prices.get(occ, [])]
+            ai_vals = [amt for _, amt in ai_prices.get(occ, [])]
+            if ai_vals and live_vals and ai_vals[0] != live_vals[0]:
+                mismatches.append(
+                    f"{_LABEL[occ]}: TC={live_vals[0]} / Doc={ai_vals[0]}"
+                )
+
+        diffs_total += len(mismatches)
+        has_issue = bool(ai_err or mismatches)
+
+        with st.expander(
+            f"{'⚠️' if has_issue else '✅'} {tcode} / {mcode}",
+            expanded=has_issue,
+        ):
+            if ai_err:
+                st.warning(f"AI extraction error: {ai_err}")
+
+            col_live, col_doc = st.columns(2)
+            with col_live:
+                st.markdown("**Current TC prices**")
+                if live_pl:
+                    for entry in live_pl:
+                        pb = entry.get("price") or {}
+                        sname = entry.get("name") or "Season"
+                        rows = []
+                        for occ in _OCC:
+                            mv = pb.get(occ)
+                            amt = mv.get("amount") if isinstance(mv, dict) else mv
+                            if amt is not None:
+                                rows.append(f"{_LABEL[occ]}: {amt}")
+                        st.caption(sname)
+                        st.text("\n".join(rows) if rows else "—")
+                else:
+                    st.text("No prices in TC")
+
+            with col_doc:
+                st.markdown("**Document prices (AI)**")
+                if ai_pl:
+                    for entry in ai_pl:
+                        pb = entry.get("price") or {}
+                        sname = entry.get("name") or "Season"
+                        rows = []
+                        for occ in _OCC:
+                            val = pb.get(occ)
+                            if val is not None:
+                                rows.append(f"{_LABEL[occ]}: {val}")
+                        st.caption(sname)
+                        st.text("\n".join(rows) if rows else "—")
+                else:
+                    st.text("Nothing extracted from document")
+
+            if mismatches:
+                st.error("**Differences:** " + " | ".join(mismatches))
+            elif not ai_err and ai_pl:
+                st.success("Prices match.")
+
+    st.markdown("---")
+    if diffs_total == 0:
+        st.success("All modalities match the document.")
+    else:
+        st.warning(f"**{diffs_total}** price difference(s) found across modalities.")
+
+    if st.button("🔄 Upload a different document", key=f"{_KEY}dc_reset"):
+        st.session_state.pop(f"{_KEY}dc_raw_text", None)
+        st.session_state.pop(f"{_KEY}dc_results", None)
+        st.rerun()
+
+
 # ── Streamlit UI ───────────────────────────────────────────────────────────────
 
 def render_closedtour_audit(client):
@@ -160,10 +375,6 @@ def render_closedtour_audit(client):
         return
 
     st.subheader("ClosedTour Audit")
-    st.caption(
-        "Two-phase check: first the basic tour information, "
-        "then a deep dive into prices and modalities."
-    )
 
     # Supplier selection
     suppliers = _load_momira_suppliers(client)
@@ -178,6 +389,22 @@ def render_closedtour_audit(client):
         key=f"{_KEY}supplier",
     )
     supplier_id = supplier_options[selected]
+
+    # Mode selection
+    mode = st.radio(
+        "Audit mode",
+        ["Audit all (basic info + price checks)", "Audit existing modalities (compare with document)"],
+        key=f"{_KEY}mode",
+        help="'Audit all' runs the full two-phase check on every tour. "
+             "'Compare with document' loads existing modalities and checks whether "
+             "their prices match a supplier document you upload."
+    )
+
+    if mode.startswith("Audit existing"):
+        _render_doc_compare(client, supplier_id, selected)
+        return
+
+    st.caption("Two-phase check: basic tour information, then prices and modalities.")
 
     if not st.button("Run audit", type="primary", key=f"{_KEY}run"):
         return
