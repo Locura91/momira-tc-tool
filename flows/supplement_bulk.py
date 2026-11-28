@@ -215,14 +215,14 @@ def _build_hotel_supp(spec):
 
 # ── apply helpers ──────────────────────────────────────────────────────────────
 
-def _apply_transfers(client, sid, transfers, specs, selected_ids=None):
+def _apply_transfers(client, sid, transfers, specs, selected_ids=None, override=False):
     targets = [t for t in transfers
                if selected_ids is None or t.get("id") in selected_ids]
     ok, errors = 0, []
     for t in targets:
         payload = copy.deepcopy(t)
-        payload["supplements"] = list(t.get("supplements") or []) + \
-                                  [_build_transfer_supp(s) for s in specs]
+        existing = [] if override else list(t.get("supplements") or [])
+        payload["supplements"] = existing + [_build_transfer_supp(s) for s in specs]
         try:
             resp = client.update_transfer(sid, payload)
             if isinstance(resp, dict) and "error" in resp:
@@ -234,7 +234,7 @@ def _apply_transfers(client, sid, transfers, specs, selected_ids=None):
     return {"ok": ok, "failed": len(errors), "errors": errors}
 
 
-def _apply_tickets(client, sid, modalities, specs, selected_keys=None):
+def _apply_tickets(client, sid, modalities, specs, selected_keys=None, override=False):
     targets = [m for m in modalities
                if selected_keys is None
                or f"{m['ticket_code']}/{m['option_code']}" in selected_keys]
@@ -242,8 +242,8 @@ def _apply_tickets(client, sid, modalities, specs, selected_keys=None):
     for m in targets:
         raw = m["raw"]
         payload = copy.deepcopy(raw)
-        payload["supplements"] = list(raw.get("supplements") or []) + \
-                                  [_build_ticket_supp(s, raw) for s in specs]
+        existing = [] if override else list(raw.get("supplements") or [])
+        payload["supplements"] = existing + [_build_ticket_supp(s, raw) for s in specs]
         label = f"{m['ticket_code']}/{m['option_code']}"
         try:
             resp = client.update_ticket_option(sid, m["ticket_code"], payload)
@@ -580,6 +580,8 @@ def render_supplement_bulk_flow(client):
     # ── Scope selectors ─────────────────────────────────────────────────
     sel_tids = sel_mkeys = sel_ctcodes = sel_htcodes = None
 
+    override_tr = override_tk = False
+
     if do_tr and transfers:
         scope = st.radio("Transfers: apply to?",
                          ["All transfers", "Select specific"], key="sb_scope_tr")
@@ -592,6 +594,11 @@ def render_supplement_bulk_flow(client):
             if not picks:
                 st.info("Select at least one transfer."); return
             sel_tids = set(picks)
+        override_tr = st.checkbox(
+            "⚠️ Override: delete all existing supplements first",
+            key="sb_override_tr",
+            help="Wipes every existing supplement from each targeted transfer before "
+                 "adding the new ones. Use when you want a clean slate.")
 
     if do_tk and modalities:
         scope = st.radio("Ticket modalities: apply to?",
@@ -605,6 +612,11 @@ def render_supplement_bulk_flow(client):
             if not picks_m:
                 st.info("Select at least one modality."); return
             sel_mkeys = set(picks_m)
+        override_tk = st.checkbox(
+            "⚠️ Override: delete all existing supplements first",
+            key="sb_override_tk",
+            help="Wipes every existing supplement from each targeted modality before "
+                 "adding the new ones. Use when you want a clean slate.")
 
     if do_ct and tours:
         scope = st.radio("ClosedTours: apply to?",
@@ -663,14 +675,16 @@ def render_supplement_bulk_flow(client):
 
     if do_tr and transfers:
         bar.progress(done_types / type_count, text="Applying to transfers…")
-        res = _apply_transfers(client, supplier_id, transfers, expanded_specs, sel_tids)
+        res = _apply_transfers(client, supplier_id, transfers, expanded_specs, sel_tids,
+                               override=override_tr)
         all_ok += res["ok"]; all_failed += res["failed"]
         all_errors.extend(f"[Transfer] {e}" for e in res["errors"])
         done_types += 1
 
     if do_tk and modalities:
         bar.progress(done_types / type_count, text="Applying to ticket modalities…")
-        res = _apply_tickets(client, supplier_id, modalities, expanded_specs, sel_mkeys)
+        res = _apply_tickets(client, supplier_id, modalities, expanded_specs, sel_mkeys,
+                             override=override_tk)
         all_ok += res["ok"]; all_failed += res["failed"]
         all_errors.extend(f"[Ticket] {e}" for e in res["errors"])
         done_types += 1
