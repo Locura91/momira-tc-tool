@@ -457,8 +457,10 @@ def render_supplement_bulk_flow(client):
     do_ht = st.session_state.get("sb_sel_ht", False)
 
     type_label = " + ".join(
-        p for p in (["Transfer" if do_tr else ""], ["Ticket" if do_tk else ""],
-                    ["ClosedTour" if do_ct else ""], ["Hotel" if do_ht else ""]) if p[0]
+        p for p in ["Transfer" if do_tr else "",
+                    "Ticket" if do_tk else "",
+                    "ClosedTour" if do_ct else "",
+                    "Hotel" if do_ht else ""] if p
     )
     st.caption(f"Product types: **{type_label}**")
 
